@@ -1,8 +1,8 @@
 {
   "name": "vendedor-autonomo-nfc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Base online do agente autonomo de vendas NFC",
+  "description": "Agente autonomo de vendas NFC",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,6 +11,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "pg": "^8.16.3"
   }
 }
