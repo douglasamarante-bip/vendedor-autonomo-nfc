@@ -1022,6 +1022,30 @@ app.get("/{*splat}",(_req,res)=>{
   res.sendFile(path.join(__dirname,"public","index.html"));
 });
 
+async function selfTestCombinedShipping(){
+  if(env("COMBINED_SHIPPING_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
+  const destination=cleanPostalCode(env("SUPERFRETE_SELFTEST_DESTINATION")||"01001000");
+  try{
+    const quote=await quoteBestShipping(destination);
+    console.log(JSON.stringify({
+      event:"combined_shipping_selftest",
+      ok:Boolean(quote.cheapest),
+      destination,
+      cheapest:quote.cheapest,
+      fastest:quote.fastest,
+      providers:quote.providers,
+      errors:quote.errors
+    }));
+  }catch(error){
+    console.log(JSON.stringify({
+      event:"combined_shipping_selftest",
+      ok:false,
+      destination,
+      error:String(error?.message||error).slice(0,300)
+    }));
+  }
+}
+
 async function selfTestSuperFrete(){
   if(env("SUPERFRETE_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
   const destination=cleanPostalCode(env("SUPERFRETE_SELFTEST_DESTINATION")||"01001000");
@@ -1108,6 +1132,7 @@ async function boot(){
   await selfTestAi();
   await selfTestShipping();
   await selfTestSuperFrete();
+  await selfTestCombinedShipping();
   app.listen(port,"0.0.0.0",()=>{
     console.log("Vendedor NFC autônomo na porta "+port);
     setTimeout(()=>{
