@@ -214,16 +214,15 @@ async function quoteShipping(toPostalCode){
     body:{
       from:{postal_code:cfg.from},
       to:{postal_code:toPostalCode},
-      products:[{
-        id:"placa-nfc",
+      volumes:[{
         width:cfg.width,
         height:cfg.height,
         length:cfg.length,
         weight:cfg.weight,
-        insurance_value:cfg.insurance,
-        quantity:1
+        insurance:cfg.insurance
       }],
-      options:{receipt:false,own_hand:false}
+      options:{receipt:false,own_hand:false},
+      services:"1,2"
     }
   });
 
