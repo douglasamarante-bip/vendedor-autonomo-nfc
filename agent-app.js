@@ -4,13 +4,19 @@ const crypto=require("crypto");
 const {Pool}=require("pg");
 
 const app=express();
-const BUILD_VERSION="sales-playbook-v1";
+const BUILD_VERSION="sales-playbook-v2";
 const port=process.env.PORT||3000;
 const env=(n)=>(process.env[n]||"").trim();
 const sessionName=()=>env("WAHA_SESSION_NAME")||"vendedor-nfc";
 const wahaBase=()=>env("WAHA_API_BASE_URL").replace(/\/$/,"");
 const autoReply=()=>env("AGENT_AUTOREPLY").toLowerCase()==="true";
 const aiReady=()=>Boolean(env("AI_API_KEY")&&env("AI_BASE_URL")&&env("AI_MODEL"));
+const proofImageUrls=()=>env("SALES_PROOF_IMAGE_URLS")
+  .split(/[\n,;]+/)
+  .map(x=>x.trim())
+  .filter(x=>/^https?:\/\//i.test(x));
+const proofMediaConfigured=()=>proofImageUrls().length>0;
+const autoProofEnabled=()=>env("SALES_PROOF_AUTO").toLowerCase()==="true";
 const shippingConfigured=()=>Boolean(
   env("SHIP_FROM_POSTAL_CODE") &&
   env("SHIP_WIDTH_CM") &&
@@ -1043,6 +1049,93 @@ async function sendHumanizedReply(chatId,reply){
   return sentMessages;
 }
 
+function proofImageMime(url){
+  const pathPart=String(url||"").split("?")[0].toLowerCase();
+  if(pathPart.endsWith(".png")) return "image/png";
+  if(pathPart.endsWith(".webp")) return "image/webp";
+  return "image/jpeg";
+}
+
+function proofImageFilename(url){
+  try{
+    const name=new URL(url).pathname.split("/").filter(Boolean).pop()||"exemplo.jpg";
+    return name.includes(".")?name:name+".jpg";
+  }catch{
+    return "exemplo.jpg";
+  }
+}
+
+async function sendProofImage(chatId,url,caption=""){
+  const res=await waha("/api/sendImage",{
+    method:"POST",
+    headers:{"Content-Type":"application/json","Accept":"application/json"},
+    body:JSON.stringify({
+      session:sessionName(),
+      chatId:outboundChatId(chatId),
+      file:{
+        mimetype:proofImageMime(url),
+        url,
+        filename:proofImageFilename(url)
+      },
+      caption
+    })
+  });
+  const raw=await res.text();
+  if(!res.ok) throw new Error("waha_send_image_"+res.status+":"+raw.slice(0,200));
+  let data={};
+  try{data=JSON.parse(raw);}catch{}
+  return data;
+}
+
+async function maybeSendProactiveProof(chatId,history){
+  if(!autoProofEnabled()||!proofMediaConfigured()) return false;
+
+  const inbound=history.filter(m=>m.direction==="inbound");
+  if(inbound.length<2) return false;
+
+  const lastIntent=detectSalesIntent(inbound[inbound.length-1]?.body||"");
+  if(["no_interest","payment","buying"].includes(lastIntent)) return false;
+
+  const {rows:[contact]}=await pool.query(
+    "select metadata from sales_contacts where chat_id=$1",
+    [chatId]
+  );
+  if(contact?.metadata?.proof_auto_sent_at) return false;
+
+  const url=proofImageUrls()[0];
+  if(!url) return false;
+
+  await setChatPresence(chatId,"typing");
+  await sleep(randomBetween(700,1300));
+  await setChatPresence(chatId,"paused");
+
+  const sent=await sendProofImage(
+    chatId,
+    url,
+    "Pra você visualizar melhor, esse é um exemplo real do nosso trabalho."
+  );
+
+  await saveMessage({
+    providerId:String(sent?.id||crypto.randomUUID()),
+    chatId,
+    direction:"outbound",
+    body:"[prova visual enviada]",
+    metadata:{type:"proof_image",url,automatic:true}
+  });
+
+  await pool.query(`
+    update sales_contacts
+    set metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
+      'proof_auto_sent_at',to_jsonb(now())
+    ),
+    last_outbound_at=now(),
+    last_seen_at=now()
+    where chat_id=$1
+  `,[chatId]);
+
+  return true;
+}
+
 function wantsOptOut(text){
   const v=String(text||"").toLowerCase();
   return /\b(parar|pare|sair|remover|remova|cancelar|não me chame|nao me chame|não mande|nao mande|stop)\b/i.test(v);
@@ -1064,6 +1157,7 @@ function scheduleAgentReply(chatId){
       if(replyVersions.get(chatId)!==version) return;
 
       await sendSeen(chatId);
+      const historyBeforeReply=await recentHistory(chatId,24);
       const reply=await generateReply(chatId);
 
       // If another client message arrived while the AI was composing, discard
@@ -1087,6 +1181,12 @@ function scheduleAgentReply(chatId){
       }
       if(sentMessages.length){
         await pool.query("update sales_contacts set last_outbound_at=now(),last_seen_at=now() where chat_id=$1",[chatId]);
+      }
+
+      if(replyVersions.get(chatId)===version){
+        await maybeSendProactiveProof(chatId,historyBeforeReply).catch(err=>{
+          console.error("proof_auto_send_error",String(err?.message||err).slice(0,300));
+        });
       }
     }).catch(err=>{
       setChatPresence(chatId,"paused").catch(()=>{});
@@ -1206,7 +1306,9 @@ app.get("/api/status",async(_req,res)=>{
       superfrete:superFreteConfigured(),
       frenet:frenetConfigured(),
       database,
-      autoReply:autoReply()
+      autoReply:autoReply(),
+      proofMedia:proofMediaConfigured(),
+      autoProof:autoProofEnabled()
     },
     whatsappSession:session?{name:session.name,status:session.status,me:session.me||null}:null
   });
