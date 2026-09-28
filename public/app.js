@@ -156,6 +156,7 @@ async function renderAgentStatus(){
     setStatus('#statusAi',i.ai);
     setStatus('#statusLeads',i.leads);
     setStatus('#statusWoovi',i.woovi);
+    setStatus('#statusShipping',i.shipping);
     setStatus('#statusDb',i.database);
 
     const session=data.whatsappSession;
@@ -175,6 +176,7 @@ async function renderAgentStatus(){
     if(!i.ai) faltam.push('IA');
     if(!i.leads) faltam.push('Busca de leads');
     if(!i.woovi) faltam.push('Woovi');
+    if(!i.shipping) faltam.push(i.shippingConfigured?'Autorizar Melhor Envio':'Configurar Melhor Envio');
     if(!i.database) faltam.push('Banco de dados');
     if(!i.autoReply) faltam.push('Ativar respostas automáticas');
     if(missing){
@@ -254,10 +256,65 @@ async function loadAgentContacts(){
   }
 }
 
+async function renderMelhorEnvioStatus(){
+  const text=$('#melhorEnvioStatusText');
+  const callback=$('#melhorEnvioCallback');
+  const connect=$('#connectMelhorEnvioBtn');
+  try{
+    const r=await fetch('/api/integrations/melhor-envio/status',{cache:'no-store'});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'status_error');
+    if(callback) callback.textContent=data.callback||'';
+    if(text){
+      text.textContent=data.connected
+        ? 'CONECTADO — cotação automática de frete ativa.'
+        : (data.configured
+          ? 'Credenciais configuradas. Falta autorizar sua conta.'
+          : 'Configuração incompleta.');
+    }
+    if(connect){
+      connect.textContent=data.connected?'Reconectar Melhor Envio':'Conectar Melhor Envio';
+    }
+  }catch{
+    if(text) text.textContent='Não foi possível verificar o Melhor Envio.';
+  }
+}
+
+const connectMelhorEnvioBtn=$('#connectMelhorEnvioBtn');
+if(connectMelhorEnvioBtn){
+  connectMelhorEnvioBtn.onclick=()=>{
+    location.href='/api/integrations/melhor-envio/connect';
+  };
+}
+const refreshMelhorEnvioBtn=$('#refreshMelhorEnvioBtn');
+if(refreshMelhorEnvioBtn) refreshMelhorEnvioBtn.onclick=async()=>{
+  await renderMelhorEnvioStatus();
+  await renderAgentStatus();
+};
+const copyMelhorEnvioCallbackBtn=$('#copyMelhorEnvioCallbackBtn');
+if(copyMelhorEnvioCallbackBtn){
+  copyMelhorEnvioCallbackBtn.onclick=async()=>{
+    const value=$('#melhorEnvioCallback')?.textContent||'';
+    await navigator.clipboard.writeText(value);
+    showToast('Callback copiado');
+  };
+}
+
+const oauthResult=new URLSearchParams(location.search).get('melhor_envio');
+if(oauthResult==='connected'){
+  setTimeout(()=>showToast('Melhor Envio conectado'),300);
+  history.replaceState({},'',location.pathname);
+}else if(oauthResult==='error'){
+  setTimeout(()=>showToast('Falha ao autorizar o Melhor Envio'),300);
+  history.replaceState({},'',location.pathname);
+}
+
 const refreshContactsBtn=$('#refreshContactsBtn');
 if(refreshContactsBtn) refreshContactsBtn.onclick=loadAgentContacts;
 
 renderAgentStatus();
+renderMelhorEnvioStatus();
 loadAgentContacts();
 setInterval(renderAgentStatus,15000);
+setInterval(renderMelhorEnvioStatus,30000);
 setInterval(loadAgentContacts,20000);
