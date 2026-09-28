@@ -223,7 +223,7 @@ async function quoteShipping(toPostalCode){
         insurance:cfg.insurance
       }],
       options:{receipt:false,own_hand:false},
-      services:"1,2"
+      ...((env("SHIP_CARRIER_MODE")||"all").toLowerCase()==="correios"?{services:"1,2"}:{})
     }
   });
 
