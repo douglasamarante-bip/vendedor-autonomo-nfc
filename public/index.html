@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mapa de Vendas NFC</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">N</div>
+      <div><strong>Mapa de Vendas NFC</strong><span>Do primeiro contato ao pós-venda</span></div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="map">Mapa</button>
+      <button class="tab" data-view="crm">Leads <span id="leadCount" class="badge">0</span></button>
+      <button class="tab" data-view="dashboard">Resultados</button>
+    </nav>
+    <div class="actions">
+      <button id="addLeadBtn" class="btn primary">+ Novo lead</button>
+      <button id="exportBtn" class="btn">Exportar</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="mapView" class="view active">
+      <div class="map-toolbar">
+        <div>
+          <h1>Mapa da venda de placa NFC</h1>
+          <p>Vender não é sorte. É processo.</p>
+        </div>
+        <div class="legend"><span class="dot green"></span> Conversão <span class="dot yellow"></span> Atenção <span class="dot blue"></span> Ação</div>
+      </div>
+
+      <div class="canvas-wrap">
+        <div class="canvas" id="salesCanvas">
+          <article class="stage prep">
+            <div class="stage-number">00</div><h2>Preparação</h2>
+            <div class="card"><h3>WhatsApp Business</h3><p>Foto, descrição clara, catálogo e respostas rápidas organizadas.</p></div>
+            <div class="card"><h3>Kit de prova</h3><p>Vídeo da placa funcionando, fotos instaladas e exemplos reais.</p></div>
+            <div class="card"><h3>Nichos para testar</h3><p>Restaurantes, barbearias, clínicas, lojas, oficinas, academias e outros.</p></div>
+          </article>
+
+          <div class="arrow">→</div>
+          <article class="stage">
+            <div class="stage-number">01</div><h2>Captar</h2>
+            <div class="card accent"><h3>Achar negócios</h3><p>Procure empresas que atendem por WhatsApp e já dependem de reputação local.</p></div>
+            <button class="script-btn" data-script="captar">Ver roteiro</button>
+          </article>
+
+          <div class="arrow">→</div>
+          <article class="stage">
+            <div class="stage-number">02</div><h2>Mapear</h2>
+            <div class="card"><h3>Escolher quem abordar</h3><p>Boa nota + poucas avaliações + concorrentes próximos com mais avaliações.</p></div>
+            <div class="tip">Confira números e dados antes de citar qualquer comparação.</div>
+            <button class="script-btn" data-script="mapear">Checklist</button>
+          </article>
+
+          <div class="arrow">→</div>
+          <article class="stage">
+            <div class="stage-number">03</div><h2>Primeira mensagem</h2>
+            <div class="card accent"><h3>Elogio + perda + pergunta</h3><p>Comece falando do negócio dele, não da sua placa.</p></div>
+            <button class="script-btn" data-script="primeira">Copiar modelo</button>
+          </article>
+
+          <div class="arrow">→</div>
+          <article class="stage">
+            <div class="stage-number">04</div><h2>Prova</h2>
+            <div class="card"><h3>Mostre funcionando</h3><p>Vídeo curto do NFC abrindo a avaliação + foto de instalação real.</p></div>
+            <div class="media-placeholder">▶ Área para vídeo/foto de prova</div>
+            <button class="script-btn" data-script="prova">Texto de envio</button>
+          </article>
+
+          <div class="arrow">→</div>
+          <article class="stage wide">
+            <div class="stage-number">05</div><h2>Preço e objeções</h2>
+            <div class="card accent"><h3>Pagamento único</h3><p>Apresente o valor depois da prova e conecte o produto ao ganho contínuo de avaliações.</p></div>
+            <div class="objections">
+              <button class="chip" data-script="caro">“Tá caro”</button>
+              <button class="chip" data-script="funciona">“Isso funciona?”</button>
+              <button class="chip" data-script="avaliacoes">“Já tenho avaliações”</button>
+            </div>
+          </article>
+
+          <div class="arrow">→</div>
+          <article class="stage">
+            <div class="stage-number">06</div><h2>Fechamento</h2>
+            <div class="card"><h3>Pergunta de escolha</h3><p>“Fica melhor no balcão ou na parede?”</p><p>“Entrego amanhã ou sexta, qual fica melhor?”</p></div>
+            <button class="script-btn" data-script="fechamento">Copiar fechamento</button>
+          </article>
+
+          <div class="arrow">→</div>
+          <article class="stage wide">
+            <div class="stage-number">07</div><h2>Follow-up</h2>
+            <div class="card"><h3>2 dias</h3><p>Retomar com leveza e oferecer um vídeo rápido.</p></div>
+            <div class="card"><h3>5 dias</h3><p>Última tentativa, sem pressão.</p></div>
+            <div class="card"><h3>Pós-venda</h3><p>Perguntar sobre novas avaliações e pedir indicação.</p></div>
+            <button class="script-btn" data-script="followup">Ver mensagens</button>
+          </article>
+
+          <div class="arrow">→</div>
+          <article class="stage metrics-stage">
+            <div class="stage-number">08</div><h2>Prova real</h2>
+            <div class="mini-funnel"><b>10</b><span>chamados</span><b>7</b><span>respondem</span><b>5</b><span>continuam</span><b>2</b><span>fecham</span></div>
+            <div class="tip">Use seus dados reais; não trate projeção como garantia.</div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="crmView" class="view">
+      <div class="section-head">
+        <div><h1>Leads</h1><p>Acompanhe cada negócio do primeiro contato ao pós-venda.</p></div>
+        <div class="filters">
+          <input id="searchInput" placeholder="Buscar nome, cidade ou nicho..." />
+          <select id="stageFilter"><option value="all">Todas as etapas</option></select>
+        </div>
+      </div>
+      <div id="kanban" class="kanban"></div>
+    </section>
+
+    <section id="dashboardView" class="view">
+      <div class="section-head"><div><h1>Resultados</h1><p>Os números abaixo são calculados a partir dos leads cadastrados.</p></div></div>
+      <div class="kpis">
+        <div class="kpi"><span>Total de leads</span><strong id="kpiTotal">0</strong></div>
+        <div class="kpi"><span>Responderam</span><strong id="kpiAnswered">0</strong></div>
+        <div class="kpi"><span>Fechados</span><strong id="kpiClosed">0</strong></div>
+        <div class="kpi"><span>Conversão</span><strong id="kpiConversion">0%</strong></div>
+        <div class="kpi"><span>Receita</span><strong id="kpiRevenue">R$ 0</strong></div>
+      </div>
+      <div class="dashboard-grid">
+        <div class="panel"><h2>Funil</h2><div id="funnelBars"></div></div>
+        <div class="panel"><h2>Próximos follow-ups</h2><div id="followupList" class="followup-list"></div></div>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="leadDialog" class="dialog">
+    <form id="leadForm" method="dialog">
+      <div class="dialog-head"><h2 id="dialogTitle">Novo lead</h2><button type="button" class="icon-btn" id="closeDialog">×</button></div>
+      <input type="hidden" id="leadId" />
+      <div class="form-grid">
+        <label>Negócio<input id="name" required placeholder="Ex.: Barbearia Central" /></label>
+        <label>Nicho<input id="niche" placeholder="Ex.: Barbearia" /></label>
+        <label>Cidade<input id="city" placeholder="Ex.: Conselheiro Lafaiete" /></label>
+        <label>WhatsApp<input id="phone" placeholder="(31) 99999-9999" /></label>
+        <label>Etapa<select id="stage"></select></label>
+        <label>Status<select id="status"><option value="novo">Novo</option><option value="respondeu">Respondeu</option><option value="andamento">Em andamento</option><option value="perdido">Perdido</option><option value="fechado">Fechado</option></select></label>
+        <label>Valor (R$)<input id="value" type="number" min="0" step="0.01" placeholder="0,00" /></label>
+        <label>Próximo follow-up<input id="followup" type="date" /></label>
+        <label class="full">Observações<textarea id="notes" rows="4" placeholder="O que aconteceu na conversa?"></textarea></label>
+      </div>
+      <div class="dialog-actions"><button type="button" id="deleteLeadBtn" class="btn danger hidden">Excluir</button><div class="spacer"></div><button type="button" class="btn" id="cancelBtn">Cancelar</button><button class="btn primary" value="save">Salvar</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="scriptDialog" class="dialog script-dialog">
+    <div class="dialog-head"><h2 id="scriptTitle">Script</h2><button class="icon-btn" id="closeScript">×</button></div>
+    <textarea id="scriptText" rows="12"></textarea>
+    <div class="dialog-actions"><span id="copyFeedback"></span><div class="spacer"></div><button id="copyScriptBtn" class="btn primary">Copiar mensagem</button></div>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
