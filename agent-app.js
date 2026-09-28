@@ -10,6 +10,93 @@ const sessionName=()=>env("WAHA_SESSION_NAME")||"vendedor-nfc";
 const wahaBase=()=>env("WAHA_API_BASE_URL").replace(/\/$/,"");
 const autoReply=()=>env("AGENT_AUTOREPLY").toLowerCase()==="true";
 const aiReady=()=>Boolean(env("AI_API_KEY")&&env("AI_BASE_URL")&&env("AI_MODEL"));
+const shippingReady=()=>Boolean(
+  env("MELHOR_ENVIO_TOKEN") &&
+  env("SHIP_FROM_POSTAL_CODE") &&
+  env("SHIP_WIDTH_CM") &&
+  env("SHIP_HEIGHT_CM") &&
+  env("SHIP_LENGTH_CM") &&
+  env("SHIP_WEIGHT_KG")
+);
+
+function cleanPostalCode(value){
+  return String(value||"").replace(/\D/g,"").slice(0,8);
+}
+
+function extractPostalCode(text){
+  const m=String(text||"").match(/\b\d{5}[-. ]?\d{3}\b/);
+  return m?cleanPostalCode(m[0]):"";
+}
+
+function shippingConfig(){
+  return {
+    base:(env("MELHOR_ENVIO_BASE_URL")||"https://melhorenvio.com.br").replace(/\/$/,""),
+    token:env("MELHOR_ENVIO_TOKEN"),
+    userAgent:env("MELHOR_ENVIO_USER_AGENT"),
+    from:cleanPostalCode(env("SHIP_FROM_POSTAL_CODE")),
+    width:Number(env("SHIP_WIDTH_CM")),
+    height:Number(env("SHIP_HEIGHT_CM")),
+    length:Number(env("SHIP_LENGTH_CM")),
+    weight:Number(env("SHIP_WEIGHT_KG")),
+    insurance:Number(env("SALES_PRODUCT_PRICE")||79.90)
+  };
+}
+
+async function quoteShipping(toPostalCode){
+  if(!shippingReady()) throw new Error("shipping_not_configured");
+  const cfg=shippingConfig();
+  if(!/^\d{8}$/.test(toPostalCode)) throw new Error("invalid_postal_code");
+  if(!cfg.userAgent || !cfg.userAgent.includes("@")) throw new Error("shipping_user_agent_missing_email");
+
+  const response=await fetch(cfg.base+"/api/v2/me/shipment/calculate",{
+    method:"POST",
+    headers:{
+      "Accept":"application/json",
+      "Content-Type":"application/json",
+      "Authorization":"Bearer "+cfg.token,
+      "User-Agent":cfg.userAgent
+    },
+    body:JSON.stringify({
+      from:{postal_code:cfg.from},
+      to:{postal_code:toPostalCode},
+      products:[{
+        id:"placa-nfc",
+        width:cfg.width,
+        height:cfg.height,
+        length:cfg.length,
+        weight:cfg.weight,
+        insurance_value:cfg.insurance,
+        quantity:1
+      }],
+      options:{receipt:false,own_hand:false}
+    }),
+    signal:AbortSignal.timeout(20000)
+  });
+
+  const raw=await response.text();
+  let data;
+  try{data=JSON.parse(raw);}catch{data=null;}
+  if(!response.ok) throw new Error("melhor_envio_"+response.status+":"+raw.slice(0,220));
+
+  const list=Array.isArray(data)?data:[];
+  const valid=list
+    .filter(x=>x && !x.error && (x.custom_price||x.price))
+    .map(x=>({
+      id:x.id,
+      name:x.name||"",
+      company:x.company?.name||"",
+      price:Number(x.custom_price||x.price),
+      deliveryTime:Number(x.custom_delivery_time||x.delivery_time||0),
+      rawDeliveryTime:Number(x.delivery_time||0)
+    }))
+    .filter(x=>Number.isFinite(x.price)&&x.price>0);
+
+  valid.sort((a,b)=>a.price-b.price || a.deliveryTime-b.deliveryTime);
+  const cheapest=valid[0]||null;
+  const fastest=[...valid].sort((a,b)=>(a.deliveryTime||9999)-(b.deliveryTime||9999)||a.price-b.price)[0]||null;
+  return {toPostalCode,options:valid.slice(0,10),cheapest,fastest};
+}
+
 
 const pool=new Pool({
   connectionString:env("DATABASE_URL"),
@@ -175,20 +262,24 @@ async function recentHistory(chatId,limit=20){
 function systemPrompt(){
   const product=env("SALES_PRODUCT_NAME")||"placa NFC para facilitar avaliações no Google";
   const price=env("SALES_PRODUCT_PRICE")||"NÃO CONFIGURADO";
-  const maxDiscount=env("SALES_MAX_DISCOUNT")||"0";
+  const minPrice=env("SALES_MIN_PRICE")||"59.90";
+  const maxDiscount=env("SALES_MAX_DISCOUNT")||"20.00";
   const delivery=env("SALES_DELIVERY_INFO")||"NÃO CONFIGURADO";
   const proof=env("SALES_PROOF_INFO")||"NÃO CONFIGURADO";
   return [
     "Você é o Vendedor NFC, um vendedor humano-assistido por IA que atende pelo WhatsApp.",
     "Objetivo: entender o negócio, explicar a placa NFC, responder dúvidas e conduzir a conversa para uma próxima ação concreta.",
     "Produto: "+product+".",
-    "Preço autorizado: "+price+".",
-    "Desconto máximo autorizado: "+maxDiscount+".",
+    "Preço padrão da placa: R$ "+price+".",
+    "Preço mínimo absoluto autorizado: R$ "+minPrice+". Nunca venda abaixo desse valor.",
+    "Desconto/concessão máxima em reais: R$ "+maxDiscount+".",
     "Entrega: "+delivery+".",
     "Provas, fotos e vídeos disponíveis: "+proof+".",
     "Responda em português do Brasil, curto, natural, educado e sem linguagem robótica.",
     "Nunca invente preço, prazo, estoque, desconto, frete, instalação, garantia, depoimento ou resultado.",
     "Se preço ou entrega estiverem NÃO CONFIGURADOS, diga que precisa confirmar antes de informar.",
+    "Para frete, nunca invente valor. Peça o CEP do cliente e use apenas a cotação real do Melhor Envio quando ela estiver disponível.",
+    "Diferencie prazo de produção/postagem do prazo de transporte da transportadora.",
     "Não prometa aumento garantido de avaliações, vendas ou faturamento.",
     "Faça no máximo uma pergunta por mensagem quando precisar avançar a conversa.",
     "Não envie várias mensagens seguidas sem resposta do cliente.",
@@ -199,8 +290,33 @@ function systemPrompt(){
 
 async function generateReply(chatId){
   const history=await recentHistory(chatId,24);
+  let shippingContext="";
+  const lastInbound=[...history].reverse().find(m=>m.direction==="inbound");
+  const cep=extractPostalCode(lastInbound?.body||"");
+  if(cep && shippingReady()){
+    try{
+      const quote=await quoteShipping(cep);
+      const cheapest=quote.cheapest;
+      const fastest=quote.fastest;
+      if(cheapest){
+        shippingContext="\nCOTAÇÃO REAL DE FRETE PARA O CEP "+cep+
+          ": opção mais barata "+cheapest.company+" "+cheapest.name+
+          " por R$ "+cheapest.price.toFixed(2).replace(".",",")+
+          (cheapest.deliveryTime?" com prazo estimado de "+cheapest.deliveryTime+" dia(s) úteis de transporte":"")+".";
+        if(fastest && fastest.id!==cheapest.id){
+          shippingContext+=" Opção mais rápida: "+fastest.company+" "+fastest.name+
+            " por R$ "+fastest.price.toFixed(2).replace(".",",")+
+            (fastest.deliveryTime?" com prazo estimado de "+fastest.deliveryTime+" dia(s) úteis de transporte":"")+".";
+        }
+        shippingContext+=" Esses prazos são de transporte e devem ser informados separadamente do prazo de produção/postagem.";
+      }
+    }catch(error){
+      console.error("shipping_quote_error",String(error?.message||error).slice(0,250));
+      shippingContext="\nO cliente informou CEP "+cep+", mas a cotação automática de frete não está disponível neste momento. Não invente valor; diga que vai consultar.";
+    }
+  }
   const messages=[
-    {role:"system",content:systemPrompt()},
+    {role:"system",content:systemPrompt()+shippingContext},
     ...history.map(m=>({
       role:m.direction==="inbound"?"user":"assistant",
       content:m.body
@@ -338,11 +454,27 @@ app.get("/api/status",async(_req,res)=>{
       ai:aiReady(),
       leads:Boolean(env("GOOGLE_PLACES_API_KEY")),
       woovi:Boolean(env("WOOVI_APP_ID")),
+      shipping:shippingReady(),
       database,
       autoReply:autoReply()
     },
     whatsappSession:session?{name:session.name,status:session.status,me:session.me||null}:null
   });
+});
+
+app.post("/api/shipping/quote",async(req,res)=>{
+  const postalCode=cleanPostalCode(req.body?.postalCode||req.body?.cep||"");
+  if(!/^\d{8}$/.test(postalCode)){
+    return res.status(400).json({ok:false,error:"invalid_postal_code"});
+  }
+  try{
+    const quote=await quoteShipping(postalCode);
+    res.json({ok:true,...quote});
+  }catch(error){
+    const message=String(error?.message||error);
+    const status=message==="shipping_not_configured"||message==="shipping_user_agent_missing_email"?503:502;
+    res.status(status).json({ok:false,error:message.slice(0,300)});
+  }
 });
 
 app.get("/api/contacts",async(req,res)=>{
