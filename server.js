@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 const crypto = require("crypto");
+const { Pool } = require("pg");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -15,6 +16,21 @@ app.use(express.static(path.join(__dirname, "public")));
 
 const env = (name) => (process.env[name] || "").trim();
 const has = (name) => Boolean(env(name));
+
+let deskcommPool;
+function getDeskcommPool(){
+  const connectionString=env("DESKCOMM_DATABASE_URL") || env("SUPABASE_DB_URL");
+  if(!connectionString) return null;
+  if(!deskcommPool) deskcommPool=new Pool({connectionString,ssl:{rejectUnauthorized:false},max:2});
+  return deskcommPool;
+}
+
+function requireBootstrapSecret(req,res,next){
+  const expected=env("BOOTSTRAP_SECRET");
+  const got=req.get("x-bootstrap-secret")||"";
+  if(!expected || got!==expected) return res.sendStatus(401);
+  next();
+}
 
 function integrationStatus() {
   const whatsapp = has("META_ACCESS_TOKEN") && has("META_PHONE_NUMBER_ID") && has("META_VERIFY_TOKEN");
@@ -240,6 +256,30 @@ app.post("/webhooks/woovi", (req, res) => {
   }));
 
   res.sendStatus(200);
+});
+
+
+app.get("/api/internal/deskcomm-discovery", requireBootstrapSecret, async (_req,res)=>{
+  const pool=getDeskcommPool();
+  if(!pool) return res.status(503).json({ok:false,error:"database_not_configured"});
+  try{
+    const client=await pool.connect();
+    try{
+      const channelCols=(await client.query("select column_name from information_schema.columns where table_schema='public' and table_name='channel_sessions'")).rows.map(r=>r.column_name);
+      const agentCols=(await client.query("select column_name from information_schema.columns where table_schema='public' and table_name='ai_agents'")).rows.map(r=>r.column_name);
+      const safeChannelAllow=["id","organization_id","provider","status","phone_number","phone_number_id","waba_id","display_name","archived_at","created_at","updated_at"];
+      const safeAgentAllow=["id","organization_id","name","kind","operation_mode","paused_at","published_version_id","archived_at","created_at","updated_at"];
+      const ch=safeChannelAllow.filter(x=>channelCols.includes(x));
+      const ag=safeAgentAllow.filter(x=>agentCols.includes(x));
+      const channels=ch.length?(await client.query(`select ${ch.map(x=>'"'+x+'"').join(",")} from public.channel_sessions where archived_at is null order by created_at desc nulls last limit 20`)).rows:[];
+      const agents=ag.length?(await client.query(`select ${ag.map(x=>'"'+x+'"').join(",")} from public.ai_agents where archived_at is null order by created_at desc nulls last limit 20`)).rows:[];
+      let credentials=[];
+      try{credentials=(await client.query("select id,organization_id,provider,label,validated_at,validation_error,is_active from public.ai_provider_credentials_safe where is_active=true order by created_at desc nulls last limit 20")).rows;}catch{}
+      res.json({ok:true,channels,agents,credentials});
+    }finally{client.release();}
+  }catch(error){
+    res.status(500).json({ok:false,error:String(error?.message||error).slice(0,500)});
+  }
 });
 
 app.get("/{*splat}", (_req, res) => {
