@@ -204,11 +204,47 @@ async function melhorEnvioApi(pathname,{method="GET",body,forceRefresh=false}={}
   return response;
 }
 
+let melhorEnvioServicesCache={at:0,services:[]};
+
+async function listMelhorEnvioServices(){
+  const now=Date.now();
+  if(melhorEnvioServicesCache.services.length && now-melhorEnvioServicesCache.at<60*60*1000){
+    return melhorEnvioServicesCache.services;
+  }
+  const response=await melhorEnvioApi("/api/v2/me/shipment/services");
+  const raw=await response.text();
+  let data=null;
+  try{data=JSON.parse(raw);}catch{}
+  if(!response.ok || !Array.isArray(data)){
+    throw new Error("melhor_envio_services_"+response.status+":"+String(raw).slice(0,180));
+  }
+  const services=data.map(x=>({
+    id:x?.id,
+    name:x?.name||"",
+    company:x?.company?.name||x?.company?.name||""
+  })).filter(x=>x.id!==undefined&&x.id!==null);
+  melhorEnvioServicesCache={at:now,services};
+  return services;
+}
+
 async function quoteShipping(toPostalCode){
   if(!shippingConfigured()) throw new Error("shipping_not_configured");
   const cfg=shippingConfig();
   if(!/^\d{8}$/.test(toPostalCode)) throw new Error("invalid_postal_code");
   if(!cfg.userAgent || !cfg.userAgent.includes("@")) throw new Error("shipping_user_agent_missing_email");
+
+  const mode=(env("SHIP_CARRIER_MODE")||"all").toLowerCase();
+  let serviceIds=[];
+  if(mode==="correios"){
+    serviceIds=[1,2];
+  }else{
+    try{
+      const services=await listMelhorEnvioServices();
+      serviceIds=services.map(x=>x.id);
+    }catch(error){
+      console.error("melhor_envio_services_error",String(error?.message||error).slice(0,220));
+    }
+  }
 
   const response=await melhorEnvioApi("/api/v2/me/shipment/calculate",{
     method:"POST",
@@ -223,7 +259,7 @@ async function quoteShipping(toPostalCode){
         insurance:cfg.insurance
       }],
       options:{receipt:false,own_hand:false},
-      ...((env("SHIP_CARRIER_MODE")||"all").toLowerCase()==="correios"?{services:"1,2"}:{})
+      ...(serviceIds.length?{services:serviceIds.join(",")}:{})
     }
   });
 
@@ -870,7 +906,8 @@ async function selfTestShipping(){
         deliveryTime:quote.cheapest.deliveryTime
       }:null,
       failures:quote.failures,
-      rawSummary:quote.rawSummary
+      rawSummary:quote.rawSummary,
+      discoveredServices:(await listMelhorEnvioServices().catch(()=>[])).map(x=>({id:x.id,name:x.name,company:x.company})).slice(0,40)
     }));
   }catch(error){
     console.log(JSON.stringify({
