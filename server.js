@@ -364,7 +364,6 @@ async function logDeskcommDiscovery(){
 }
 
 async function cleanupDeskcommAccidentalLink(){
-  if(env("CLEANUP_DESKCOMM_NFC").toLowerCase()!=="true") return;
   const pool=getDeskcommPool();
   if(!pool){console.log(JSON.stringify({event:"deskcomm_cleanup",ok:false,error:"database_not_configured"}));return;}
   const client=await pool.connect();
