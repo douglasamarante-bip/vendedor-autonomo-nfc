@@ -171,4 +171,9 @@ app.get("/{*splat}",(_req,res)=>{
 
 app.listen(port,"0.0.0.0",()=>{
   console.log("Vendedor NFC + WAHA na porta "+port);
+  setTimeout(()=>{
+    ensureSession()
+      .then(s=>console.log(JSON.stringify({event:"waha_session_boot",status:s?.status||null})))
+      .catch(e=>console.error("waha_session_boot_error",String(e?.message||e)));
+  },3000);
 });
