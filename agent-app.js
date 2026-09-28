@@ -590,6 +590,33 @@ app.get("/{*splat}",(_req,res)=>{
   res.sendFile(path.join(__dirname,"public","index.html"));
 });
 
+async function selfTestShipping(){
+  if(env("SHIPPING_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
+  const destination=cleanPostalCode(env("SHIPPING_SELFTEST_DESTINATION")||"01001000");
+  try{
+    const quote=await quoteShipping(destination);
+    console.log(JSON.stringify({
+      event:"shipping_selftest",
+      ok:Boolean(quote.cheapest),
+      destination,
+      options:quote.options.length,
+      cheapest:quote.cheapest?{
+        company:quote.cheapest.company,
+        service:quote.cheapest.name,
+        price:quote.cheapest.price,
+        deliveryTime:quote.cheapest.deliveryTime
+      }:null
+    }));
+  }catch(error){
+    console.log(JSON.stringify({
+      event:"shipping_selftest",
+      ok:false,
+      destination,
+      error:String(error?.message||error).slice(0,300)
+    }));
+  }
+}
+
 async function selfTestAi(){
   if(env("AI_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
   if(!aiReady()){
@@ -621,6 +648,7 @@ async function selfTestAi(){
 async function boot(){
   await migrate();
   await selfTestAi();
+  await selfTestShipping();
   app.listen(port,"0.0.0.0",()=>{
     console.log("Vendedor NFC autônomo na porta "+port);
     setTimeout(()=>{
