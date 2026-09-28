@@ -79,7 +79,7 @@ async function quoteShipping(toPostalCode){
   if(!response.ok) throw new Error("melhor_envio_"+response.status+":"+raw.slice(0,220));
 
   const list=Array.isArray(data)?data:[];
-  const valid=list
+  let valid=list
     .filter(x=>x && !x.error && (x.custom_price||x.price))
     .map(x=>({
       id:x.id,
@@ -90,6 +90,12 @@ async function quoteShipping(toPostalCode){
       rawDeliveryTime:Number(x.delivery_time||0)
     }))
     .filter(x=>Number.isFinite(x.price)&&x.price>0);
+
+  const correiosOnly=(env("SHIP_CARRIER_MODE")||"correios").toLowerCase()==="correios";
+  if(correiosOnly){
+    const correios=valid.filter(x=>String(x.company||"").toLowerCase().includes("correios"));
+    if(correios.length) valid=correios;
+  }
 
   valid.sort((a,b)=>a.price-b.price || a.deliveryTime-b.deliveryTime);
   const cheapest=valid[0]||null;
