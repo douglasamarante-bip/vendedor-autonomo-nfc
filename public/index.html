@@ -14,6 +14,7 @@
     </div>
     <nav class="tabs">
       <button class="tab active" data-view="map">Mapa</button>
+      <button class="tab" data-view="agent">Agente <span id="agentBadge" class="badge">SETUP</span></button>
       <button class="tab" data-view="crm">Leads <span id="leadCount" class="badge">0</span></button>
       <button class="tab" data-view="dashboard">Resultados</button>
     </nav>
@@ -105,6 +106,36 @@
             <div class="mini-funnel"><b>10</b><span>chamados</span><b>7</b><span>respondem</span><b>5</b><span>continuam</span><b>2</b><span>fecham</span></div>
             <div class="tip">Use seus dados reais; não trate projeção como garantia.</div>
           </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="agentView" class="view">
+      <div class="section-head">
+        <div>
+          <h1>Agente de vendas</h1>
+          <p>Estado real das integrações que fazem o vendedor trabalhar sozinho.</p>
+        </div>
+        <div id="agentState" class="agent-state">Carregando...</div>
+      </div>
+
+      <div class="agent-grid">
+        <div class="integration-card"><span>WhatsApp</span><strong id="statusWhatsapp">—</strong><small>Receber e responder mensagens</small></div>
+        <div class="integration-card"><span>IA</span><strong id="statusAi">—</strong><small>Conduzir a conversa e objeções</small></div>
+        <div class="integration-card"><span>Busca de leads</span><strong id="statusLeads">—</strong><small>Encontrar e qualificar negócios</small></div>
+        <div class="integration-card"><span>Woovi</span><strong id="statusWoovi">—</strong><small>PIX e confirmação de pagamento</small></div>
+        <div class="integration-card"><span>Banco</span><strong id="statusDb">—</strong><small>Histórico, leads e conversas</small></div>
+      </div>
+
+      <div class="agent-panels">
+        <div class="panel">
+          <h2>Webhook do WhatsApp</h2>
+          <p class="muted">Use esta URL na configuração da Meta:</p>
+          <div class="copy-line"><code id="whatsappWebhookUrl"></code><button id="copyWebhookBtn" class="btn">Copiar</button></div>
+        </div>
+        <div class="panel">
+          <h2>O que falta</h2>
+          <div id="missingList" class="missing-list"></div>
         </div>
       </div>
     </section>
