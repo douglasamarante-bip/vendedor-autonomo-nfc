@@ -262,7 +262,17 @@ async function quoteShipping(toPostalCode){
   valid.sort((a,b)=>a.price-b.price || a.deliveryTime-b.deliveryTime);
   const cheapest=valid[0]||null;
   const fastest=[...valid].sort((a,b)=>(a.deliveryTime||9999)-(b.deliveryTime||9999)||a.price-b.price)[0]||null;
-  return {toPostalCode,options:valid.slice(0,10),cheapest,fastest,failures:failures.slice(0,10)};
+  const rawSummary=list.slice(0,12).map(x=>({
+    id:x?.id||null,
+    name:x?.name||"",
+    company:x?.company?.name||"",
+    price:x?.price??null,
+    custom_price:x?.custom_price??null,
+    delivery_time:x?.delivery_time??null,
+    custom_delivery_time:x?.custom_delivery_time??null,
+    error:x?.error??null
+  }));
+  return {toPostalCode,options:valid.slice(0,10),cheapest,fastest,failures:failures.slice(0,10),rawSummary};
 }
 
 
@@ -858,7 +868,8 @@ async function selfTestShipping(){
         price:quote.cheapest.price,
         deliveryTime:quote.cheapest.deliveryTime
       }:null,
-      failures:quote.failures
+      failures:quote.failures,
+      rawSummary:quote.rawSummary
     }));
   }catch(error){
     console.log(JSON.stringify({
