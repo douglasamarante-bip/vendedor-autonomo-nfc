@@ -4,7 +4,7 @@ const crypto=require("crypto");
 const {Pool}=require("pg");
 
 const app=express();
-const BUILD_VERSION="freight-v2";
+const BUILD_VERSION="sales-playbook-v1";
 const port=process.env.PORT||3000;
 const env=(n)=>(process.env[n]||"").trim();
 const sessionName=()=>env("WAHA_SESSION_NAME")||"vendedor-nfc";
@@ -723,6 +723,99 @@ async function recentHistory(chatId,limit=20){
   return rows.reverse();
 }
 
+function salesText(value){
+  return String(value||"")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g,"");
+}
+
+function detectSalesIntent(text){
+  const v=salesText(text);
+  if(!v) return "unknown";
+  if(/\b(nao tenho interesse|sem interesse|nao quero|deixa pra la|nao precisa|obrigado mas nao)\b/.test(v)) return "no_interest";
+  if(/\b(ja temos|ja tenho|temos)\b.*\b(app|aplicativo|sistema)\b|\b(app|aplicativo|sistema)\b.*\b(ja temos|ja tenho|temos)\b/.test(v)) return "has_app";
+  if(/\b(ja temos|ja tenho|tenho|temos)\b.*\bqr|qr code|qrcode\b|\bqr|qr code|qrcode\b.*\b(ja temos|ja tenho|tenho|temos)\b/.test(v)) return "has_qr";
+  if(/\b(caro|caro demais|achei caro|mais barato|desconto|descontinho|melhor valor|valor alto|preco alto)\b/.test(v)) return "price_objection";
+  if(/\b(quanto custa|qual o valor|qual valor|preco|valor|quanto fica)\b/.test(v)) return "price_question";
+  if(/\b(frete|cep|entrega|sedex|pac|transportadora|prazo para chegar|quando chega)\b/.test(v)) return "shipping";
+  if(/\b(foto|video|exemplo|prova|cliente|qualidade|ja fizeram|referencia|referencias)\b/.test(v)) return "proof";
+  if(/\b(pix|pagamento|pagar|chave pix|qr code do pix|cobranca)\b/.test(v)) return "payment";
+  if(/\b(fecha|fechado|fechou|quero|vou querer|pode fazer|pode produzir|vamos fazer|pode mandar o pix|manda o pix)\b/.test(v)) return "buying";
+  if(/\b(gerente|responsavel|dono|proprietario|quem decide)\b/.test(v)) return "decision_maker";
+  return "general";
+}
+
+function salesPlaybookContext(history){
+  const inbound=history.filter(m=>m.direction==="inbound");
+  const outbound=history.filter(m=>m.direction==="outbound");
+  const lastInbound=inbound[inbound.length-1]?.body||"";
+  const intent=detectSalesIntent(lastInbound);
+  const refusalCount=inbound.filter(m=>detectSalesIntent(m.body)==="no_interest").length;
+  const hasPriceBeenSent=outbound.some(m=>/R\$\s*\d|\b\d{2,3}[,.]\d{2}\b/.test(String(m.body||"")));
+  const proofConfigured=Boolean(env("SALES_PROOF_INFO")&&salesText(env("SALES_PROOF_INFO"))!=="nao configurado");
+  const paymentConfigured=Boolean(env("WOOVI_APP_ID"));
+
+  const rules=[
+    "ESTRATÉGIA DESTA CONVERSA:",
+    "Intenção mais recente detectada: "+intent+".",
+    "Respostas do cliente com recusa explícita até agora: "+refusalCount+".",
+    "Preço já foi informado nesta conversa: "+(hasPriceBeenSent?"sim":"não")+".",
+    "Prova comercial cadastrada: "+(proofConfigured?"sim":"não")+".",
+    "PIX automático disponível: "+(paymentConfigured?"sim":"não")+"."
+  ];
+
+  if(intent==="no_interest"){
+    if(refusalCount>=2){
+      rules.push("É a segunda recusa clara. Não contorne novamente. Respeite, encerre de forma educada e não faça outra pergunta de venda.");
+    }else{
+      rules.push("É a primeira recusa. Não pressione. Reconheça e, somente se houver uma diferença concreta que possa mudar a decisão, faça UMA pergunta curta de diagnóstico. Não ofereça desconto nessa etapa.");
+    }
+  }
+  if(intent==="has_app"){
+    rules.push("O cliente já tem aplicativo/sistema. NÃO tente substituir. Posicione a placa como acesso físico rápido ao que ele já usa: aproximação NFC ou QR para abrir app, cardápio, Instagram ou avaliação. Preserve o investimento atual do cliente.");
+  }
+  if(intent==="has_qr"){
+    rules.push("O cliente já tem QR Code. NÃO venda outro QR como se fosse a novidade. Posicione o diferencial como peça física personalizada + NFC por aproximação + acabamento/apresentação + possibilidade de direcionar o acesso conforme a configuração disponível. Não diminua o QR atual nem quem o criou.");
+  }
+  if(intent==="price_question"){
+    rules.push("O cliente perguntou preço diretamente. Responda o valor sem enrolar. Em seguida explique em uma frase o que está incluído e faça no máximo uma pergunta de avanço.");
+  }
+  if(intent==="price_objection"){
+    rules.push("Há objeção de preço. Primeiro recoloque valor e utilidade em contexto. Se ainda precisar negociar, use a menor concessão necessária dentro das regras comerciais. Nunca revele o preço mínimo interno nem a margem de desconto.");
+  }
+  if(intent==="proof"){
+    rules.push(proofConfigured
+      ?"O cliente quer confiança/prova. Use somente a prova comercial realmente cadastrada. Seja específico sem exagerar."
+      :"O cliente pediu prova, mas não há prova comercial cadastrada. Não invente foto, vídeo, cliente, depoimento ou resultado; diga que precisa confirmar/materializar isso.");
+  }
+  if(intent==="shipping"){
+    rules.push("Trate frete como cálculo real. Se houver CEP, use somente a cotação injetada no contexto. Não prometa frete grátis a menos que exista uma promoção explicitamente configurada.");
+  }
+  if(intent==="buying"){
+    rules.push("O cliente demonstrou intenção de compra. Pare de vender e comece a fechar: identifique apenas o próximo dado que falta (ex.: CEP, personalização, pagamento). Não reabra objeções nem faça apresentação longa.");
+  }
+  if(intent==="payment"){
+    rules.push(paymentConfigured
+      ?"O cliente chegou ao pagamento. Use o fluxo PIX configurado quando a cobrança estiver disponível; não invente chave ou QR."
+      :"O cliente chegou ao pagamento, mas o PIX automático ainda não está configurado. Não invente chave/QR; diga que o pagamento precisa ser confirmado/gerado.");
+  }
+
+  if(proofConfigured && inbound.length>=2 && !outbound.some(m=>salesText(m.body).includes("prova")||salesText(m.body).includes("exemplo")||salesText(m.body).includes("foto")||salesText(m.body).includes("video"))){
+    rules.push("A conversa já teve algum avanço e existe prova cadastrada. Se for natural neste momento, apresente a prova antes de o cliente precisar pedir, sem interromper uma resposta direta.");
+  }
+
+  rules.push(
+    "Não ofereça desconto automaticamente na primeira conversa ou só para gerar interesse.",
+    "Não diga que 'muitos restaurantes da região estão fazendo' nem use qualquer prova social local sem isso estar explicitamente sustentado nas provas cadastradas.",
+    "Não diga que preparou uma arte específica para o cliente se uma arte real ainda não foi criada.",
+    "Nunca crie urgência falsa, escassez falsa ou prazo promocional inventado.",
+    "Quando a resposta do cliente já indicar compra, reduza a persuasão e aumente a objetividade operacional."
+  );
+
+  return rules.join("\n");
+}
+
 function systemPrompt(){
   const product=env("SALES_PRODUCT_NAME")||"placa NFC para facilitar avaliações no Google";
   const price=env("SALES_PRODUCT_PRICE")||"NÃO CONFIGURADO";
@@ -732,7 +825,9 @@ function systemPrompt(){
   const proof=env("SALES_PROOF_INFO")||"NÃO CONFIGURADO";
   return [
     "Você é o Vendedor NFC, um vendedor humano-assistido por IA que atende pelo WhatsApp.",
-    "Objetivo: entender o negócio, explicar a placa NFC, responder dúvidas e conduzir a conversa para uma próxima ação concreta.",
+    "Objetivo: entender o negócio, criar valor real para o cliente, responder dúvidas, tratar objeções com respeito e conduzir a conversa para a próxima ação concreta quando houver interesse.",
+    "Método: diagnosticar antes de empurrar produto; conectar o benefício ao que o cliente já usa; responder a objeção específica; demonstrar prova quando houver prova real; só então avançar para preço, fechamento e pós-venda.",
+    "Venda consultiva: não discuta com o cliente, não tente vencer a objeção no grito e não repita a mesma oferta. Descubra o motivo por trás da objeção e mude o enquadramento apenas quando houver ganho real para ele.",
     "Produto: "+product+".",
     "Preço padrão da placa: R$ "+price+".",
     "Preço mínimo absoluto autorizado: R$ "+minPrice+". Nunca venda abaixo desse valor.",
@@ -758,6 +853,12 @@ function systemPrompt(){
     "Se a pessoa perguntar diretamente se você é robô, IA ou atendimento automático, responda com transparência que é o assistente de vendas automatizado da empresa. Nunca afirme falsamente ser uma pessoa.",
     "Não invente experiências pessoais, sentimentos, nome próprio, cargo ou histórias para parecer humano.",
     "Se a pessoa pedir para parar, sair, remover o contato ou não receber mensagens, confirme brevemente e encerre.",
+    "Nunca revele ao cliente o preço mínimo interno, a margem disponível ou o limite máximo de desconto.",
+    "Não dê desconto sem necessidade. Comece pelo preço padrão; só use concessão diante de objeção real e sempre preserve o maior valor possível dentro das regras.",
+    "Não prometa frete grátis, brinde ou condição especial se isso não estiver explicitamente configurado.",
+    "Use prova social somente quando houver informação real cadastrada em 'Provas, fotos e vídeos disponíveis'. Nunca invente que restaurantes da região usam o produto.",
+    "Quando houver interesse forte de compra, pare de argumentar e facilite o fechamento com o menor número de passos.",
+    "Depois da venda, mantenha o cliente informado sobre arte, aprovação, produção e rastreio sem tentar vender de novo no mesmo momento.",
     "Se houver pedido fora das regras comerciais, diga que precisa confirmar antes de prometer."
   ].join("\n");
 }
@@ -777,7 +878,7 @@ async function generateReply(chatId){
           ": opção mais barata via "+(cheapest.provider==="superfrete"?"SuperFrete":cheapest.provider==="frenet"?"Frenet":"Melhor Envio")+" — "+cheapest.company+" "+cheapest.name+
           " por R$ "+cheapest.price.toFixed(2).replace(".",",")+
           (cheapest.deliveryTime?" com prazo estimado de "+cheapest.deliveryTime+" dia(s) úteis de transporte":"")+".";
-        if(fastest && fastest.id!==cheapest.id){
+        if(fastest && (fastest.provider!==cheapest.provider || fastest.id!==cheapest.id)){
           shippingContext+=" Opção mais rápida via "+(fastest.provider==="superfrete"?"SuperFrete":fastest.provider==="frenet"?"Frenet":"Melhor Envio")+": "+fastest.company+" "+fastest.name+
             " por R$ "+fastest.price.toFixed(2).replace(".",",")+
             (fastest.deliveryTime?" com prazo estimado de "+fastest.deliveryTime+" dia(s) úteis de transporte":"")+".";
@@ -790,7 +891,7 @@ async function generateReply(chatId){
     }
   }
   const messages=[
-    {role:"system",content:systemPrompt()+shippingContext},
+    {role:"system",content:systemPrompt()+"\n\n"+salesPlaybookContext(history)+shippingContext},
     ...history.map(m=>({
       role:m.direction==="inbound"?"user":"assistant",
       content:m.body
@@ -1000,6 +1101,29 @@ function scheduleAgentReply(chatId){
   replyTimers.set(chatId,timer);
 }
 
+function stageFromInbound(body){
+  const intent=detectSalesIntent(body);
+  if(intent==="buying"||intent==="payment") return "fechamento";
+  if(intent==="price_question"||intent==="price_objection"||intent==="shipping") return "negociacao";
+  if(intent==="proof") return "prova";
+  if(intent==="no_interest"||intent==="has_app"||intent==="has_qr") return "objecao";
+  return "conversa";
+}
+
+async function updateContactSalesState(chatId,body){
+  const intent=detectSalesIntent(body);
+  const stage=stageFromInbound(body);
+  await pool.query(`
+    update sales_contacts
+    set stage=$2,
+        metadata=coalesce(metadata,'{}'::jsonb) || jsonb_build_object(
+          'last_intent',$3,
+          'last_intent_at',to_jsonb(now())
+        )
+    where chat_id=$1
+  `,[chatId,stage,intent]);
+}
+
 async function processInbound(payload,eventId){
   const chatId=String(payload?.from||payload?._data?.key?.remoteJid||"");
   const fromMe=Boolean(payload?.fromMe||payload?._data?.key?.fromMe);
@@ -1017,6 +1141,10 @@ async function processInbound(payload,eventId){
     metadata:{timestamp:payload?.timestamp||null}
   });
   if(!inserted) return;
+
+  await updateContactSalesState(chatId,body).catch(err=>{
+    console.error("sales_state_error",String(err?.message||err).slice(0,240));
+  });
 
   if(wantsOptOut(body)){
     await pool.query("update sales_contacts set opted_out=true,status='optout',last_seen_at=now() where chat_id=$1",[chatId]);
