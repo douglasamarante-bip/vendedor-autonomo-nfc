@@ -1,8 +1,8 @@
 {
   "name": "vendedor-autonomo-nfc",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
-  "description": "Agente autonomo de vendas NFC, isolado de outros projetos",
+  "description": "Vendedor autonomo NFC com WAHA, Postgres e IA",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,6 +11,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "pg": "^8.16.3"
   }
 }
