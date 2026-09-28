@@ -33,9 +33,9 @@ function requireBootstrapSecret(req,res,next){
 }
 
 function integrationStatus() {
-  const whatsapp = has("META_ACCESS_TOKEN") && has("META_PHONE_NUMBER_ID") && has("META_VERIFY_TOKEN");
+  const whatsapp = (has("META_ACCESS_TOKEN") && has("META_PHONE_NUMBER_ID") && has("META_VERIFY_TOKEN")) || env("WHATSAPP_CONNECTED_VIA_DESKCOMM").toLowerCase() === "true";
   const whatsappSignature = has("META_APP_SECRET");
-  const ai = has("AI_API_KEY") && has("AI_BASE_URL") && has("AI_MODEL");
+  const ai = (has("AI_API_KEY") && has("AI_BASE_URL") && has("AI_MODEL")) || env("AI_CONNECTED_VIA_DESKCOMM").toLowerCase() === "true";
   const leads = has("GOOGLE_PLACES_API_KEY");
   const woovi = has("WOOVI_APP_ID");
   const database = has("DATABASE_URL");
@@ -72,6 +72,7 @@ app.get("/api/status", (_req, res) => {
   if (!integrations.leads) missing.push("Busca de leads");
   if (!integrations.woovi) missing.push("Woovi");
   if (!integrations.database) missing.push("Banco de dados");
+  if (!integrations.autoReply) missing.push("Ativação do agente NFC");
 
   res.json({
     ok: true,
