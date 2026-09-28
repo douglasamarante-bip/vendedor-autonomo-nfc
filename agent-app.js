@@ -35,6 +35,7 @@ async function migrate(){
       stage text not null default 'novo',
       status text not null default 'ativo',
       opted_out boolean not null default false,
+      agent_enabled boolean not null default false,
       first_seen_at timestamptz not null default now(),
       last_seen_at timestamptz not null default now(),
       last_inbound_at timestamptz,
@@ -60,6 +61,7 @@ async function migrate(){
       payload jsonb not null default '{}'::jsonb,
       created_at timestamptz not null default now()
     );
+    alter table sales_contacts add column if not exists agent_enabled boolean not null default false;
   `);
 }
 
@@ -285,8 +287,8 @@ async function processInbound(payload,eventId){
     return;
   }
 
-  const {rows:[contact]}=await pool.query("select opted_out from sales_contacts where chat_id=$1",[chatId]);
-  if(contact?.opted_out||!autoReply()||!aiReady()) return;
+  const {rows:[contact]}=await pool.query("select opted_out,agent_enabled from sales_contacts where chat_id=$1",[chatId]);
+  if(contact?.opted_out||!contact?.agent_enabled||!autoReply()||!aiReady()) return;
 
   const previous=queues.get(chatId)||Promise.resolve();
   const next=previous.then(async()=>{
@@ -353,6 +355,16 @@ app.get("/api/contacts",async(req,res)=>{
     limit $1
   `,[limit]);
   res.json({ok:true,contacts:rows});
+});
+
+app.post("/api/contacts/:chatId/agent",async(req,res)=>{
+  const enabled=Boolean(req.body?.enabled);
+  const result=await pool.query(
+    "update sales_contacts set agent_enabled=$2,last_seen_at=now() where chat_id=$1 returning chat_id,agent_enabled",
+    [req.params.chatId,enabled]
+  );
+  if(!result.rowCount) return res.status(404).json({ok:false,error:"contact_not_found"});
+  res.json({ok:true,contact:result.rows[0]});
 });
 
 app.get("/api/contacts/:chatId/messages",async(req,res)=>{
