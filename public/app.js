@@ -199,5 +199,65 @@ if(connectWahaBtn) connectWahaBtn.onclick=connectWaha;
 const refreshQrBtn=$('#refreshQrBtn');
 if(refreshQrBtn) refreshQrBtn.onclick=loadWahaQr;
 
+async function loadAgentContacts(){
+  const list=$('#agentContactsList');
+  if(!list)return;
+  try{
+    const r=await fetch('/api/contacts?limit=50',{cache:'no-store'});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'contacts_error');
+    const contacts=data.contacts||[];
+    if(!contacts.length){
+      list.innerHTML='<div class="muted">Ainda não chegou nenhuma conversa neste número.</div>';
+      return;
+    }
+    list.innerHTML=contacts.map(contact=>{
+      const title=esc(contact.display_name||contact.phone||contact.chat_id);
+      const meta=esc((contact.phone||'')+(contact.stage?' • '+contact.stage:'')+(contact.status?' • '+contact.status:''));
+      const last=esc(contact.last_message||'Sem mensagem');
+      const enabled=Boolean(contact.agent_enabled)&&!contact.opted_out;
+      return '<div class="agent-contact">'+
+        '<div class="agent-contact-main">'+
+          '<div class="agent-contact-name">'+title+'</div>'+
+          '<div class="agent-contact-meta">'+meta+'</div>'+
+          '<div class="agent-contact-last">'+last+'</div>'+
+        '</div>'+
+        '<div class="agent-toggle">'+
+          '<button class="btn '+(enabled?'enabled':'disabled')+'" data-agent-chat="'+encodeURIComponent(contact.chat_id)+'" data-agent-enabled="'+(enabled?'true':'false')+'" '+(contact.opted_out?'disabled':'')+'>'+
+            (contact.opted_out?'Opt-out':enabled?'IA ATIVA':'Ativar IA')+
+          '</button>'+
+        '</div>'+
+      '</div>';
+    }).join('');
+    $('[data-agent-chat]').forEach(btn=>{
+      btn.onclick=async()=>{
+        const chatId=decodeURIComponent(btn.dataset.agentChat||'');
+        const enabled=btn.dataset.agentEnabled!=='true';
+        btn.disabled=true;
+        try{
+          const rr=await fetch('/api/contacts/'+encodeURIComponent(chatId)+'/agent',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({enabled})
+          });
+          if(!rr.ok) throw new Error('toggle_error');
+          showToast(enabled?'IA ativada para este lead':'IA pausada para este lead');
+          await loadAgentContacts();
+        }catch{
+          showToast('Não consegui alterar este contato');
+          btn.disabled=false;
+        }
+      };
+    });
+  }catch{
+    list.innerHTML='<div class="muted">Não foi possível carregar as conversas.</div>';
+  }
+}
+
+const refreshContactsBtn=$('#refreshContactsBtn');
+if(refreshContactsBtn) refreshContactsBtn.onclick=loadAgentContacts;
+
 renderAgentStatus();
+loadAgentContacts();
 setInterval(renderAgentStatus,15000);
+setInterval(loadAgentContacts,20000);
