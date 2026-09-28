@@ -8,7 +8,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "vendedor-autonomo-nfc", version: "0.1.0" });
+  res.json({ ok: true, service: "vendedor-autonomo-nfc", version: "0.1.1" });
 });
 
 app.get("/api/status", (_req, res) => {
@@ -25,7 +25,7 @@ app.get("/api/status", (_req, res) => {
   });
 });
 
-app.get("*", (_req, res) => {
+app.get("/{*splat}", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
