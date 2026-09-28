@@ -312,6 +312,92 @@ async function quoteShipping(toPostalCode){
 }
 
 
+
+function superFreteConfigured(){
+  return Boolean(
+    env("SUPERFRETE_TOKEN") &&
+    env("SHIP_FROM_POSTAL_CODE") &&
+    env("SHIP_WIDTH_CM") &&
+    env("SHIP_HEIGHT_CM") &&
+    env("SHIP_LENGTH_CM") &&
+    env("SHIP_WEIGHT_KG")
+  );
+}
+
+function superFreteConfig(){
+  return {
+    base:(env("SUPERFRETE_BASE_URL")||"https://api.superfrete.com").replace(/\/$/,""),
+    token:normalizedSecret(env("SUPERFRETE_TOKEN")),
+    userAgent:env("SUPERFRETE_USER_AGENT")||env("MELHOR_ENVIO_USER_AGENT")||"Vendedor-NFC/1.0",
+    from:cleanPostalCode(env("SHIP_FROM_POSTAL_CODE")),
+    width:Number(env("SHIP_WIDTH_CM")),
+    height:Number(env("SHIP_HEIGHT_CM")),
+    length:Number(env("SHIP_LENGTH_CM")),
+    weight:Number(env("SHIP_WEIGHT_KG"))
+  };
+}
+
+async function quoteSuperFrete(toPostalCode){
+  if(!superFreteConfigured()) throw new Error("superfrete_not_configured");
+  const cfg=superFreteConfig();
+  if(!/^\d{8}$/.test(toPostalCode)) throw new Error("invalid_postal_code");
+
+  const response=await fetch(cfg.base+"/api/v0/calculator",{
+    method:"POST",
+    headers:{
+      "Accept":"application/json",
+      "Content-Type":"application/json",
+      "Authorization":"Bearer "+cfg.token,
+      "User-Agent":cfg.userAgent
+    },
+    body:JSON.stringify({
+      from:{postal_code:cfg.from},
+      to:{postal_code:toPostalCode},
+      services:"1,2,3,17,31",
+      package:{
+        height:cfg.height,
+        width:cfg.width,
+        length:cfg.length,
+        weight:cfg.weight
+      }
+    }),
+    signal:AbortSignal.timeout(20000)
+  });
+
+  const raw=await response.text();
+  let data=null;
+  try{data=JSON.parse(raw);}catch{}
+  if(!response.ok){
+    throw new Error("superfrete_"+response.status+":"+(data?.message||data?.error||raw).slice(0,220));
+  }
+
+  const list=Array.isArray(data)?data:(Array.isArray(data?.data)?data.data:[]);
+  const options=list.map(x=>({
+    provider:"superfrete",
+    id:x?.id??x?.service??null,
+    name:x?.name||x?.service_name||x?.service||"",
+    company:x?.company?.name||x?.company||x?.carrier||"",
+    price:Number(x?.custom_price??x?.price??x?.cost??0),
+    deliveryTime:Number(x?.custom_delivery_time??x?.delivery_time??x?.deliveryTime??0),
+    error:x?.error||null
+  })).filter(x=>!x.error&&Number.isFinite(x.price)&&x.price>0);
+
+  options.sort((a,b)=>a.price-b.price || a.deliveryTime-b.deliveryTime);
+  const cheapest=options[0]||null;
+  const fastest=[...options].sort((a,b)=>(a.deliveryTime||9999)-(b.deliveryTime||9999)||a.price-b.price)[0]||null;
+
+  const rawSummary=list.slice(0,12).map(x=>({
+    id:x?.id??x?.service??null,
+    name:x?.name||x?.service_name||x?.service||"",
+    company:x?.company?.name||x?.company||x?.carrier||"",
+    price:x?.custom_price??x?.price??x?.cost??null,
+    deliveryTime:x?.custom_delivery_time??x?.delivery_time??x?.deliveryTime??null,
+    error:x?.error??null
+  }));
+
+  return {provider:"superfrete",toPostalCode,options,cheapest,fastest,rawSummary};
+}
+
 const pool=new Pool({
   connectionString:env("DATABASE_URL"),
   max:5,
@@ -889,6 +975,29 @@ app.get("/{*splat}",(_req,res)=>{
   res.sendFile(path.join(__dirname,"public","index.html"));
 });
 
+async function selfTestSuperFrete(){
+  if(env("SUPERFRETE_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
+  const destination=cleanPostalCode(env("SUPERFRETE_SELFTEST_DESTINATION")||"01001000");
+  try{
+    const quote=await quoteSuperFrete(destination);
+    console.log(JSON.stringify({
+      event:"superfrete_selftest",
+      ok:Boolean(quote.cheapest),
+      destination,
+      options:quote.options.length,
+      cheapest:quote.cheapest,
+      rawSummary:quote.rawSummary
+    }));
+  }catch(error){
+    console.log(JSON.stringify({
+      event:"superfrete_selftest",
+      ok:false,
+      destination,
+      error:String(error?.message||error).slice(0,300)
+    }));
+  }
+}
+
 async function selfTestShipping(){
   if(env("SHIPPING_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
   const destination=cleanPostalCode(env("SHIPPING_SELFTEST_DESTINATION")||"01001000");
@@ -951,6 +1060,7 @@ async function boot(){
   await migrate();
   await selfTestAi();
   await selfTestShipping();
+  await selfTestSuperFrete();
   app.listen(port,"0.0.0.0",()=>{
     console.log("Vendedor NFC autônomo na porta "+port);
     setTimeout(()=>{
