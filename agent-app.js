@@ -16,7 +16,8 @@ const shippingReady=()=>Boolean(
   env("SHIP_WIDTH_CM") &&
   env("SHIP_HEIGHT_CM") &&
   env("SHIP_LENGTH_CM") &&
-  env("SHIP_WEIGHT_KG")
+  env("SHIP_WEIGHT_KG") &&
+  env("MELHOR_ENVIO_USER_AGENT").includes("@")
 );
 
 function cleanPostalCode(value){
@@ -466,21 +467,6 @@ app.get("/api/status",async(_req,res)=>{
     },
     whatsappSession:session?{name:session.name,status:session.status,me:session.me||null}:null
   });
-});
-
-app.post("/api/shipping/quote",async(req,res)=>{
-  const postalCode=cleanPostalCode(req.body?.postalCode||req.body?.cep||"");
-  if(!/^\d{8}$/.test(postalCode)){
-    return res.status(400).json({ok:false,error:"invalid_postal_code"});
-  }
-  try{
-    const quote=await quoteShipping(postalCode);
-    res.json({ok:true,...quote});
-  }catch(error){
-    const message=String(error?.message||error);
-    const status=message==="shipping_not_configured"||message==="shipping_user_agent_missing_email"?503:502;
-    res.status(status).json({ok:false,error:message.slice(0,300)});
-  }
 });
 
 app.get("/api/contacts",async(req,res)=>{
