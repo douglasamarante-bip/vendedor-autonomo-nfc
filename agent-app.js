@@ -10,14 +10,17 @@ const sessionName=()=>env("WAHA_SESSION_NAME")||"vendedor-nfc";
 const wahaBase=()=>env("WAHA_API_BASE_URL").replace(/\/$/,"");
 const autoReply=()=>env("AGENT_AUTOREPLY").toLowerCase()==="true";
 const aiReady=()=>Boolean(env("AI_API_KEY")&&env("AI_BASE_URL")&&env("AI_MODEL"));
-const shippingReady=()=>Boolean(
-  env("MELHOR_ENVIO_TOKEN") &&
+const shippingConfigured=()=>Boolean(
   env("SHIP_FROM_POSTAL_CODE") &&
   env("SHIP_WIDTH_CM") &&
   env("SHIP_HEIGHT_CM") &&
   env("SHIP_LENGTH_CM") &&
   env("SHIP_WEIGHT_KG") &&
-  env("MELHOR_ENVIO_USER_AGENT").includes("@")
+  env("MELHOR_ENVIO_USER_AGENT").includes("@") &&
+  (
+    (env("MELHOR_ENVIO_CLIENT_ID") && env("MELHOR_ENVIO_CLIENT_SECRET")) ||
+    env("MELHOR_ENVIO_TOKEN")
+  )
 );
 
 function cleanPostalCode(value){
@@ -41,7 +44,6 @@ function normalizedSecret(value){
 function shippingConfig(){
   return {
     base:(env("MELHOR_ENVIO_BASE_URL")||"https://melhorenvio.com.br").replace(/\/$/,""),
-    token:normalizedSecret(env("MELHOR_ENVIO_TOKEN")),
     userAgent:env("MELHOR_ENVIO_USER_AGENT"),
     from:cleanPostalCode(env("SHIP_FROM_POSTAL_CODE")),
     width:Number(env("SHIP_WIDTH_CM")),
@@ -52,22 +54,164 @@ function shippingConfig(){
   };
 }
 
-async function quoteShipping(toPostalCode,baseOverride=""){
-  if(!shippingReady()) throw new Error("shipping_not_configured");
+function melhorEnvioRedirectUri(){
+  return env("MELHOR_ENVIO_REDIRECT_URI") ||
+    (env("PUBLIC_BASE_URL").replace(/\/$/,"")+"/api/integrations/melhor-envio/callback");
+}
+
+function integrationKey(){
+  const raw=env("APP_ENCRYPTION_KEY");
+  if(!raw) throw new Error("integration_encryption_key_missing");
+  if(/^[0-9a-f]{64}$/i.test(raw)) return Buffer.from(raw,"hex");
+  return crypto.createHash("sha256").update(raw).digest();
+}
+
+function encryptSecret(value){
+  const iv=crypto.randomBytes(12);
+  const cipher=crypto.createCipheriv("aes-256-gcm",integrationKey(),iv);
+  const encrypted=Buffer.concat([cipher.update(String(value),"utf8"),cipher.final()]);
+  const tag=cipher.getAuthTag();
+  return [iv,tag,encrypted].map(x=>x.toString("base64url")).join(".");
+}
+
+function decryptSecret(value){
+  const parts=String(value||"").split(".");
+  if(parts.length!==3) throw new Error("invalid_encrypted_secret");
+  const [iv,tag,data]=parts.map(x=>Buffer.from(x,"base64url"));
+  const decipher=crypto.createDecipheriv("aes-256-gcm",integrationKey(),iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(data),decipher.final()]).toString("utf8");
+}
+
+async function exchangeMelhorEnvioToken(payload){
+  const cfg=shippingConfig();
+  const endpoint=cfg.base+"/oauth/token";
+  const body=new URLSearchParams();
+  for(const [key,value] of Object.entries(payload)){
+    if(value!==undefined&&value!==null&&String(value)!=="") body.set(key,String(value));
+  }
+  const response=await fetch(endpoint,{
+    method:"POST",
+    headers:{
+      "Accept":"application/json",
+      "Content-Type":"application/x-www-form-urlencoded",
+      "User-Agent":cfg.userAgent
+    },
+    body,
+    signal:AbortSignal.timeout(20000)
+  });
+  const raw=await response.text();
+  let data=null;
+  try{data=JSON.parse(raw);}catch{}
+  if(!response.ok || !data?.access_token){
+    throw new Error("melhor_envio_oauth_"+response.status+":"+(data?.message||data?.error||raw).slice(0,220));
+  }
+  return data;
+}
+
+async function saveMelhorEnvioTokens(data){
+  const expiresIn=Math.max(Number(data?.expires_in)||2592000,60);
+  const refreshToken=data?.refresh_token||"";
+  await pool.query(`
+    insert into integration_tokens(provider,access_token_enc,refresh_token_enc,expires_at,refresh_expires_at,scope,metadata,updated_at)
+    values('melhor_envio',$1,$2,now()+($3||' seconds')::interval,now()+interval '45 days',$4,$5::jsonb,now())
+    on conflict(provider) do update set
+      access_token_enc=excluded.access_token_enc,
+      refresh_token_enc=case when excluded.refresh_token_enc<>'' then excluded.refresh_token_enc else integration_tokens.refresh_token_enc end,
+      expires_at=excluded.expires_at,
+      refresh_expires_at=case when excluded.refresh_token_enc<>'' then excluded.refresh_expires_at else integration_tokens.refresh_expires_at end,
+      scope=excluded.scope,
+      metadata=excluded.metadata,
+      updated_at=now()
+  `,[
+    encryptSecret(data.access_token),
+    refreshToken?encryptSecret(refreshToken):"",
+    String(expiresIn),
+    String(data.scope||"shipping-calculate"),
+    JSON.stringify({token_type:data.token_type||"Bearer"})
+  ]);
+}
+
+async function getStoredMelhorEnvioToken(){
+  const {rows}=await pool.query(`
+    select access_token_enc,refresh_token_enc,expires_at,refresh_expires_at,scope
+    from integration_tokens where provider='melhor_envio' limit 1
+  `);
+  if(!rows[0]) return null;
+  return {
+    accessToken:decryptSecret(rows[0].access_token_enc),
+    refreshToken:rows[0].refresh_token_enc?decryptSecret(rows[0].refresh_token_enc):"",
+    expiresAt:rows[0].expires_at,
+    refreshExpiresAt:rows[0].refresh_expires_at,
+    scope:rows[0].scope
+  };
+}
+
+async function refreshMelhorEnvioToken(stored){
+  if(!stored?.refreshToken) throw new Error("melhor_envio_reauthorization_required");
+  if(stored.refreshExpiresAt && new Date(stored.refreshExpiresAt).getTime()<=Date.now()){
+    throw new Error("melhor_envio_reauthorization_required");
+  }
+  const data=await exchangeMelhorEnvioToken({
+    grant_type:"refresh_token",
+    client_id:env("MELHOR_ENVIO_CLIENT_ID"),
+    client_secret:env("MELHOR_ENVIO_CLIENT_SECRET"),
+    refresh_token:stored.refreshToken
+  });
+  await saveMelhorEnvioTokens(data);
+  return data.access_token;
+}
+
+async function getMelhorEnvioAccessToken({forceRefresh=false}={}){
+  const stored=await getStoredMelhorEnvioToken().catch(()=>null);
+  if(stored){
+    const expires=new Date(stored.expiresAt).getTime();
+    if(!forceRefresh && expires>Date.now()+5*60*1000) return stored.accessToken;
+    return await refreshMelhorEnvioToken(stored);
+  }
+  const legacy=normalizedSecret(env("MELHOR_ENVIO_TOKEN"));
+  if(legacy && !forceRefresh) return legacy;
+  throw new Error("melhor_envio_not_authorized");
+}
+
+async function melhorEnvioConnected(){
+  try{
+    const stored=await getStoredMelhorEnvioToken();
+    return Boolean(stored?.accessToken && stored?.refreshToken);
+  }catch{
+    return false;
+  }
+}
+
+async function melhorEnvioApi(pathname,{method="GET",body,forceRefresh=false}={}){
+  const cfg=shippingConfig();
+  const token=await getMelhorEnvioAccessToken({forceRefresh});
+  const response=await fetch(cfg.base+pathname,{
+    method,
+    headers:{
+      "Accept":"application/json",
+      ...(body?{"Content-Type":"application/json"}:{}),
+      "Authorization":"Bearer "+token,
+      "User-Agent":cfg.userAgent
+    },
+    ...(body?{body:JSON.stringify(body)}:{}),
+    signal:AbortSignal.timeout(20000)
+  });
+  if(response.status===401 && !forceRefresh){
+    return melhorEnvioApi(pathname,{method,body,forceRefresh:true});
+  }
+  return response;
+}
+
+async function quoteShipping(toPostalCode){
+  if(!shippingConfigured()) throw new Error("shipping_not_configured");
   const cfg=shippingConfig();
   if(!/^\d{8}$/.test(toPostalCode)) throw new Error("invalid_postal_code");
   if(!cfg.userAgent || !cfg.userAgent.includes("@")) throw new Error("shipping_user_agent_missing_email");
 
-  const targetBase=(baseOverride||cfg.base).replace(/\/$/,"");
-  const response=await fetch(targetBase+"/api/v2/me/shipment/calculate",{
+  const response=await melhorEnvioApi("/api/v2/me/shipment/calculate",{
     method:"POST",
-    headers:{
-      "Accept":"application/json",
-      "Content-Type":"application/json",
-      "Authorization":"Bearer "+cfg.token,
-      "User-Agent":cfg.userAgent
-    },
-    body:JSON.stringify({
+    body:{
       from:{postal_code:cfg.from},
       to:{postal_code:toPostalCode},
       products:[{
@@ -80,14 +224,13 @@ async function quoteShipping(toPostalCode,baseOverride=""){
         quantity:1
       }],
       options:{receipt:false,own_hand:false}
-    }),
-    signal:AbortSignal.timeout(20000)
+    }
   });
 
   const raw=await response.text();
   let data;
   try{data=JSON.parse(raw);}catch{data=null;}
-  if(!response.ok) throw new Error("melhor_envio_"+response.status+":"+raw.slice(0,220));
+  if(!response.ok) throw new Error("melhor_envio_"+response.status+":"+(data?.message||raw).slice(0,220));
 
   const list=Array.isArray(data)?data:[];
   let valid=list
@@ -163,6 +306,22 @@ async function migrate(){
       id bigserial primary key,
       event_type text not null,
       payload jsonb not null default '{}'::jsonb,
+      created_at timestamptz not null default now()
+    );
+    create table if not exists integration_tokens(
+      provider text primary key,
+      access_token_enc text not null,
+      refresh_token_enc text not null default '',
+      expires_at timestamptz not null,
+      refresh_expires_at timestamptz,
+      scope text,
+      metadata jsonb not null default '{}'::jsonb,
+      updated_at timestamptz not null default now()
+    );
+    create table if not exists oauth_states(
+      provider text not null,
+      state text primary key,
+      expires_at timestamptz not null,
       created_at timestamptz not null default now()
     );
     alter table sales_contacts add column if not exists agent_enabled boolean not null default false;
@@ -454,12 +613,14 @@ app.get("/health",async(_req,res)=>{
 
 app.get("/api/status",async(_req,res)=>{
   let session=null,wahaReachable=false,database=false;
+  let shippingConnected=false;
   try{await pool.query("select 1");database=true;}catch{}
   try{
     const r=await waha("/api/server/version");
     wahaReachable=r.ok;
     if(wahaReachable) session=await getSession();
   }catch{}
+  try{shippingConnected=await melhorEnvioConnected();}catch{}
   const whatsapp=session?.status==="WORKING";
   res.json({
     ok:true,
@@ -471,12 +632,85 @@ app.get("/api/status",async(_req,res)=>{
       ai:aiReady(),
       leads:Boolean(env("GOOGLE_PLACES_API_KEY")),
       woovi:Boolean(env("WOOVI_APP_ID")),
-      shipping:shippingReady(),
+      shipping:shippingConnected,
+      shippingConfigured:shippingConfigured(),
       database,
       autoReply:autoReply()
     },
     whatsappSession:session?{name:session.name,status:session.status,me:session.me||null}:null
   });
+});
+
+app.get("/api/integrations/melhor-envio/status",async(_req,res)=>{
+  const connected=await melhorEnvioConnected();
+  res.json({
+    ok:true,
+    connected,
+    configured:shippingConfigured(),
+    callback:melhorEnvioRedirectUri(),
+    scope:"shipping-calculate"
+  });
+});
+
+app.get("/api/integrations/melhor-envio/connect",async(_req,res)=>{
+  if(!env("MELHOR_ENVIO_CLIENT_ID")||!env("MELHOR_ENVIO_CLIENT_SECRET")){
+    return res.status(503).send("Credenciais do Melhor Envio não configuradas.");
+  }
+  if(!env("MELHOR_ENVIO_USER_AGENT").includes("@")){
+    return res.status(503).send("MELHOR_ENVIO_USER_AGENT precisa conter um e-mail válido.");
+  }
+  const state=crypto.randomBytes(32).toString("hex");
+  await pool.query("delete from oauth_states where provider='melhor_envio' or expires_at<now()");
+  await pool.query(
+    "insert into oauth_states(provider,state,expires_at) values('melhor_envio',$1,now()+interval '10 minutes')",
+    [state]
+  );
+  const cfg=shippingConfig();
+  const url=new URL(cfg.base+"/oauth/authorize");
+  url.searchParams.set("client_id",env("MELHOR_ENVIO_CLIENT_ID"));
+  url.searchParams.set("redirect_uri",melhorEnvioRedirectUri());
+  url.searchParams.set("response_type","code");
+  url.searchParams.set("state",state);
+  url.searchParams.set("scope","shipping-calculate");
+  res.redirect(url.toString());
+});
+
+app.get("/api/integrations/melhor-envio/callback",async(req,res)=>{
+  const code=String(req.query.code||"");
+  const state=String(req.query.state||"");
+  const oauthError=String(req.query.error||"");
+  if(oauthError){
+    return res.redirect("/?melhor_envio=error&reason="+encodeURIComponent(oauthError));
+  }
+  if(!code||!state){
+    return res.status(400).send("Retorno OAuth inválido.");
+  }
+  const result=await pool.query(
+    "delete from oauth_states where provider='melhor_envio' and state=$1 and expires_at>now() returning state",
+    [state]
+  );
+  if(!result.rowCount){
+    return res.status(400).send("Autorização expirada ou inválida. Volte ao painel e tente conectar novamente.");
+  }
+  try{
+    const data=await exchangeMelhorEnvioToken({
+      grant_type:"authorization_code",
+      client_id:env("MELHOR_ENVIO_CLIENT_ID"),
+      client_secret:env("MELHOR_ENVIO_CLIENT_SECRET"),
+      redirect_uri:melhorEnvioRedirectUri(),
+      code
+    });
+    await saveMelhorEnvioTokens(data);
+    return res.redirect("/?melhor_envio=connected");
+  }catch(error){
+    console.error("melhor_envio_oauth_error",String(error?.message||error).slice(0,300));
+    return res.redirect("/?melhor_envio=error");
+  }
+});
+
+app.post("/api/integrations/melhor-envio/disconnect",async(_req,res)=>{
+  await pool.query("delete from integration_tokens where provider='melhor_envio'");
+  res.json({ok:true});
 });
 
 app.get("/api/contacts",async(req,res)=>{
@@ -608,7 +842,6 @@ async function selfTestShipping(){
     console.log(JSON.stringify({
       event:"shipping_selftest",
       ok:Boolean(quote.cheapest),
-      environment:"production",
       destination,
       options:quote.options.length,
       cheapest:quote.cheapest?{
@@ -619,42 +852,11 @@ async function selfTestShipping(){
       }:null
     }));
   }catch(error){
-    const firstError=String(error?.message||error);
-    if(firstError.includes("melhor_envio_401")){
-      try{
-        const sandboxQuote=await quoteShipping(destination,"https://sandbox.melhorenvio.com.br");
-        console.log(JSON.stringify({
-          event:"shipping_selftest",
-          ok:Boolean(sandboxQuote.cheapest),
-          environment:"sandbox",
-          destination,
-          options:sandboxQuote.options.length,
-          cheapest:sandboxQuote.cheapest?{
-            company:sandboxQuote.cheapest.company,
-            service:sandboxQuote.cheapest.name,
-            price:sandboxQuote.cheapest.price,
-            deliveryTime:sandboxQuote.cheapest.deliveryTime
-          }:null
-        }));
-        return;
-      }catch(sandboxError){
-        console.log(JSON.stringify({
-          event:"shipping_selftest",
-          ok:false,
-          environment:"production_and_sandbox",
-          destination,
-          productionError:firstError.slice(0,180),
-          sandboxError:String(sandboxError?.message||sandboxError).slice(0,180)
-        }));
-        return;
-      }
-    }
     console.log(JSON.stringify({
       event:"shipping_selftest",
       ok:false,
-      environment:"production",
       destination,
-      error:firstError.slice(0,300)
+      error:String(error?.message||error).slice(0,240)
     }));
   }
 }
