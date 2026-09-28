@@ -29,10 +29,19 @@ function extractPostalCode(text){
   return m?cleanPostalCode(m[0]):"";
 }
 
+function normalizedSecret(value){
+  let v=String(value||"").trim();
+  v=v.replace(/^Bearer\s+/i,"").trim();
+  if((v.startsWith('"')&&v.endsWith('"'))||(v.startsWith("'")&&v.endsWith("'"))){
+    v=v.slice(1,-1).trim();
+  }
+  return v;
+}
+
 function shippingConfig(){
   return {
     base:(env("MELHOR_ENVIO_BASE_URL")||"https://melhorenvio.com.br").replace(/\/$/,""),
-    token:env("MELHOR_ENVIO_TOKEN"),
+    token:normalizedSecret(env("MELHOR_ENVIO_TOKEN")),
     userAgent:env("MELHOR_ENVIO_USER_AGENT"),
     from:cleanPostalCode(env("SHIP_FROM_POSTAL_CODE")),
     width:Number(env("SHIP_WIDTH_CM")),
