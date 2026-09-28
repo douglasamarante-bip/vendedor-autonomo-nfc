@@ -401,7 +401,8 @@ async function quoteSuperFrete(toPostalCode){
 async function quoteBestShipping(toPostalCode){
   const results=await Promise.allSettled([
     quoteShipping(toPostalCode),
-    quoteSuperFrete(toPostalCode)
+    quoteSuperFrete(toPostalCode),
+    quoteFrenet(toPostalCode)
   ]);
 
   const providers=[];
@@ -442,6 +443,105 @@ async function quoteBestShipping(toPostalCode){
     providers,
     errors
   };
+}
+
+
+function frenetConfigured(){
+  return Boolean(
+    env("FRENET_TOKEN") &&
+    env("SHIP_FROM_POSTAL_CODE") &&
+    env("SHIP_WIDTH_CM") &&
+    env("SHIP_HEIGHT_CM") &&
+    env("SHIP_LENGTH_CM") &&
+    env("SHIP_WEIGHT_KG")
+  );
+}
+
+function frenetConfig(){
+  return {
+    base:(env("FRENET_BASE_URL")||"https://api.frenet.com.br").replace(/\/$/,""),
+    token:normalizedSecret(env("FRENET_TOKEN")),
+    from:cleanPostalCode(env("SHIP_FROM_POSTAL_CODE")),
+    width:Number(env("SHIP_WIDTH_CM")),
+    height:Number(env("SHIP_HEIGHT_CM")),
+    length:Number(env("SHIP_LENGTH_CM")),
+    weight:Number(env("SHIP_WEIGHT_KG")),
+    invoiceValue:Number(env("SALES_PRODUCT_PRICE")||79.90)
+  };
+}
+
+async function quoteFrenet(toPostalCode){
+  if(!frenetConfigured()) throw new Error("frenet_not_configured");
+  const cfg=frenetConfig();
+  if(!/^\d{8}$/.test(toPostalCode)) throw new Error("invalid_postal_code");
+
+  const response=await fetch(cfg.base+"/shipping/quote",{
+    method:"POST",
+    headers:{
+      "Accept":"application/json",
+      "Content-Type":"application/json",
+      "token":cfg.token
+    },
+    body:JSON.stringify({
+      SellerCEP:cfg.from,
+      RecipientCEP:toPostalCode,
+      ShipmentInvoiceValue:cfg.invoiceValue,
+      RecipientCountry:"BR",
+      ShippingItemArray:[{
+        Quantity:1,
+        Weight:cfg.weight,
+        Length:cfg.length,
+        Height:cfg.height,
+        Width:cfg.width,
+        Diameter:0,
+        SKU:"placa-nfc",
+        Category:"Placa NFC",
+        isFragile:false,
+        ProductName:"Placa NFC personalizada"
+      }]
+    }),
+    signal:AbortSignal.timeout(20000)
+  });
+
+  const raw=await response.text();
+  let data=null;
+  try{data=JSON.parse(raw);}catch{}
+  if(!response.ok){
+    throw new Error("frenet_"+response.status+":"+(data?.Message||data?.message||raw).slice(0,220));
+  }
+
+  const list=
+    (Array.isArray(data)?data:null) ||
+    data?.ShippingSevicesArray ||
+    data?.ShippingServicesArray ||
+    data?.shippingServices ||
+    data?.services ||
+    [];
+
+  const options=(Array.isArray(list)?list:[]).map(x=>({
+    provider:"frenet",
+    id:x?.ServiceCode??x?.serviceCode??x?.id??null,
+    name:x?.ServiceDescription||x?.serviceDescription||x?.name||"",
+    company:x?.Carrier||x?.carrier||x?.CarrierCode||"",
+    price:Number(x?.ShippingPrice??x?.shippingPrice??x?.price??0),
+    deliveryTime:Number(x?.DeliveryTime??x?.deliveryTime??0),
+    error:(x?.Error===true||x?.error===true)?(x?.Msg||x?.Message||"service_error"):null
+  })).filter(x=>!x.error&&Number.isFinite(x.price)&&x.price>0);
+
+  options.sort((a,b)=>a.price-b.price || a.deliveryTime-b.deliveryTime);
+  const cheapest=options[0]||null;
+  const fastest=[...options].sort((a,b)=>(a.deliveryTime||9999)-(b.deliveryTime||9999)||a.price-b.price)[0]||null;
+
+  const rawSummary=(Array.isArray(list)?list:[]).slice(0,20).map(x=>({
+    serviceCode:x?.ServiceCode??x?.serviceCode??x?.id??null,
+    service:x?.ServiceDescription||x?.serviceDescription||x?.name||"",
+    carrier:x?.Carrier||x?.carrier||x?.CarrierCode||"",
+    price:x?.ShippingPrice??x?.shippingPrice??x?.price??null,
+    deliveryTime:x?.DeliveryTime??x?.deliveryTime??null,
+    error:x?.Error??x?.error??null
+  }));
+
+  return {provider:"frenet",toPostalCode,options,cheapest,fastest,rawSummary};
 }
 
 const pool=new Pool({
@@ -662,11 +762,11 @@ async function generateReply(chatId){
       const fastest=quote.fastest;
       if(cheapest){
         shippingContext="\nCOTAÇÃO REAL DE FRETE PARA O CEP "+cep+
-          ": opção mais barata via "+(cheapest.provider==="superfrete"?"SuperFrete":"Melhor Envio")+" — "+cheapest.company+" "+cheapest.name+
+          ": opção mais barata via "+(cheapest.provider==="superfrete"?"SuperFrete":cheapest.provider==="frenet"?"Frenet":"Melhor Envio")+" — "+cheapest.company+" "+cheapest.name+
           " por R$ "+cheapest.price.toFixed(2).replace(".",",")+
           (cheapest.deliveryTime?" com prazo estimado de "+cheapest.deliveryTime+" dia(s) úteis de transporte":"")+".";
         if(fastest && fastest.id!==cheapest.id){
-          shippingContext+=" Opção mais rápida via "+(fastest.provider==="superfrete"?"SuperFrete":"Melhor Envio")+": "+fastest.company+" "+fastest.name+
+          shippingContext+=" Opção mais rápida via "+(fastest.provider==="superfrete"?"SuperFrete":fastest.provider==="frenet"?"Frenet":"Melhor Envio")+": "+fastest.company+" "+fastest.name+
             " por R$ "+fastest.price.toFixed(2).replace(".",",")+
             (fastest.deliveryTime?" com prazo estimado de "+fastest.deliveryTime+" dia(s) úteis de transporte":"")+".";
         }
@@ -822,6 +922,7 @@ app.get("/api/status",async(_req,res)=>{
       shipping:shippingConnected,
       shippingConfigured:shippingConfigured(),
       superfrete:superFreteConfigured(),
+      frenet:frenetConfigured(),
       database,
       autoReply:autoReply()
     },
@@ -1046,6 +1147,30 @@ async function selfTestCombinedShipping(){
   }
 }
 
+async function selfTestFrenet(){
+  if(env("FRENET_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
+  const destination=cleanPostalCode(env("FRENET_SELFTEST_DESTINATION")||"01001000");
+  try{
+    const quote=await quoteFrenet(destination);
+    console.log(JSON.stringify({
+      event:"frenet_selftest",
+      ok:Boolean(quote.cheapest),
+      destination,
+      options:quote.options.length,
+      cheapest:quote.cheapest,
+      fastest:quote.fastest,
+      rawSummary:quote.rawSummary
+    }));
+  }catch(error){
+    console.log(JSON.stringify({
+      event:"frenet_selftest",
+      ok:false,
+      destination,
+      error:String(error?.message||error).slice(0,300)
+    }));
+  }
+}
+
 async function selfTestSuperFrete(){
   if(env("SUPERFRETE_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
   const destination=cleanPostalCode(env("SUPERFRETE_SELFTEST_DESTINATION")||"01001000");
@@ -1132,6 +1257,7 @@ async function boot(){
   await selfTestAi();
   await selfTestShipping();
   await selfTestSuperFrete();
+  await selfTestFrenet();
   await selfTestCombinedShipping();
   app.listen(port,"0.0.0.0",()=>{
     console.log("Vendedor NFC autônomo na porta "+port);
