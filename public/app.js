@@ -231,7 +231,7 @@ async function loadAgentContacts(){
         '</div>'+
       '</div>';
     }).join('');
-    $('[data-agent-chat]').forEach(btn=>{
+    document.querySelectorAll('[data-agent-chat]').forEach(btn=>{
       btn.onclick=async()=>{
         const chatId=decodeURIComponent(btn.dataset.agentChat||'');
         const enabled=btn.dataset.agentEnabled!=='true';
