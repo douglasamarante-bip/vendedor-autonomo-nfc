@@ -43,13 +43,14 @@ function shippingConfig(){
   };
 }
 
-async function quoteShipping(toPostalCode){
+async function quoteShipping(toPostalCode,baseOverride=""){
   if(!shippingReady()) throw new Error("shipping_not_configured");
   const cfg=shippingConfig();
   if(!/^\d{8}$/.test(toPostalCode)) throw new Error("invalid_postal_code");
   if(!cfg.userAgent || !cfg.userAgent.includes("@")) throw new Error("shipping_user_agent_missing_email");
 
-  const response=await fetch(cfg.base+"/api/v2/me/shipment/calculate",{
+  const targetBase=(baseOverride||cfg.base).replace(/\/$/,"");
+  const response=await fetch(targetBase+"/api/v2/me/shipment/calculate",{
     method:"POST",
     headers:{
       "Accept":"application/json",
@@ -598,6 +599,7 @@ async function selfTestShipping(){
     console.log(JSON.stringify({
       event:"shipping_selftest",
       ok:Boolean(quote.cheapest),
+      environment:"production",
       destination,
       options:quote.options.length,
       cheapest:quote.cheapest?{
@@ -608,11 +610,42 @@ async function selfTestShipping(){
       }:null
     }));
   }catch(error){
+    const firstError=String(error?.message||error);
+    if(firstError.includes("melhor_envio_401")){
+      try{
+        const sandboxQuote=await quoteShipping(destination,"https://sandbox.melhorenvio.com.br");
+        console.log(JSON.stringify({
+          event:"shipping_selftest",
+          ok:Boolean(sandboxQuote.cheapest),
+          environment:"sandbox",
+          destination,
+          options:sandboxQuote.options.length,
+          cheapest:sandboxQuote.cheapest?{
+            company:sandboxQuote.cheapest.company,
+            service:sandboxQuote.cheapest.name,
+            price:sandboxQuote.cheapest.price,
+            deliveryTime:sandboxQuote.cheapest.deliveryTime
+          }:null
+        }));
+        return;
+      }catch(sandboxError){
+        console.log(JSON.stringify({
+          event:"shipping_selftest",
+          ok:false,
+          environment:"production_and_sandbox",
+          destination,
+          productionError:firstError.slice(0,180),
+          sandboxError:String(sandboxError?.message||sandboxError).slice(0,180)
+        }));
+        return;
+      }
+    }
     console.log(JSON.stringify({
       event:"shipping_selftest",
       ok:false,
+      environment:"production",
       destination,
-      error:String(error?.message||error).slice(0,300)
+      error:firstError.slice(0,300)
     }));
   }
 }
