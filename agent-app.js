@@ -398,6 +398,52 @@ async function quoteSuperFrete(toPostalCode){
   return {provider:"superfrete",toPostalCode,options,cheapest,fastest,rawSummary};
 }
 
+async function quoteBestShipping(toPostalCode){
+  const results=await Promise.allSettled([
+    quoteShipping(toPostalCode),
+    quoteSuperFrete(toPostalCode)
+  ]);
+
+  const providers=[];
+  const all=[];
+  const errors=[];
+
+  for(const result of results){
+    if(result.status==="fulfilled"){
+      const quote=result.value;
+      const provider=quote.provider||"melhor_envio";
+      providers.push({
+        provider,
+        options:quote.options?.length||0,
+        cheapest:quote.cheapest||null,
+        fastest:quote.fastest||null
+      });
+      for(const option of quote.options||[]){
+        all.push({
+          ...option,
+          provider:option.provider||provider
+        });
+      }
+    }else{
+      errors.push(String(result.reason?.message||result.reason||"unknown_error").slice(0,220));
+    }
+  }
+
+  const usable=all.filter(x=>Number.isFinite(Number(x.price))&&Number(x.price)>0);
+  usable.sort((a,b)=>Number(a.price)-Number(b.price)||(Number(a.deliveryTime)||9999)-(Number(b.deliveryTime)||9999));
+  const cheapest=usable[0]||null;
+  const fastest=[...usable].sort((a,b)=>(Number(a.deliveryTime)||9999)-(Number(b.deliveryTime)||9999)||Number(a.price)-Number(b.price))[0]||null;
+
+  return {
+    toPostalCode,
+    cheapest,
+    fastest,
+    options:usable.slice(0,20),
+    providers,
+    errors
+  };
+}
+
 const pool=new Pool({
   connectionString:env("DATABASE_URL"),
   max:5,
@@ -611,16 +657,16 @@ async function generateReply(chatId){
   const cep=extractPostalCode(lastInbound?.body||"");
   if(cep && shippingConfigured()){
     try{
-      const quote=await quoteShipping(cep);
+      const quote=await quoteBestShipping(cep);
       const cheapest=quote.cheapest;
       const fastest=quote.fastest;
       if(cheapest){
         shippingContext="\nCOTAÇÃO REAL DE FRETE PARA O CEP "+cep+
-          ": opção mais barata "+cheapest.company+" "+cheapest.name+
+          ": opção mais barata via "+(cheapest.provider==="superfrete"?"SuperFrete":"Melhor Envio")+" — "+cheapest.company+" "+cheapest.name+
           " por R$ "+cheapest.price.toFixed(2).replace(".",",")+
           (cheapest.deliveryTime?" com prazo estimado de "+cheapest.deliveryTime+" dia(s) úteis de transporte":"")+".";
         if(fastest && fastest.id!==cheapest.id){
-          shippingContext+=" Opção mais rápida: "+fastest.company+" "+fastest.name+
+          shippingContext+=" Opção mais rápida via "+(fastest.provider==="superfrete"?"SuperFrete":"Melhor Envio")+": "+fastest.company+" "+fastest.name+
             " por R$ "+fastest.price.toFixed(2).replace(".",",")+
             (fastest.deliveryTime?" com prazo estimado de "+fastest.deliveryTime+" dia(s) úteis de transporte":"")+".";
         }
@@ -775,6 +821,7 @@ app.get("/api/status",async(_req,res)=>{
       woovi:Boolean(env("WOOVI_APP_ID")),
       shipping:shippingConnected,
       shippingConfigured:shippingConfigured(),
+      superfrete:superFreteConfigured(),
       database,
       autoReply:autoReply()
     },
