@@ -466,8 +466,37 @@ app.get("/{*splat}",(_req,res)=>{
   res.sendFile(path.join(__dirname,"public","index.html"));
 });
 
+async function selfTestAi(){
+  if(env("AI_SELFTEST_ON_BOOT").toLowerCase()!=="true") return;
+  if(!aiReady()){
+    console.log(JSON.stringify({event:"ai_selftest",ok:false,error:"not_configured"}));
+    return;
+  }
+  try{
+    const base=env("AI_BASE_URL").replace(/\/$/,"");
+    const response=await fetch(base+"/chat/completions",{
+      method:"POST",
+      headers:{
+        "Authorization":"Bearer "+env("AI_API_KEY"),
+        "Content-Type":"application/json"
+      },
+      body:JSON.stringify({
+        model:env("AI_MODEL"),
+        temperature:0,
+        max_tokens:8,
+        messages:[{role:"user",content:"Responda apenas OK"}]
+      }),
+      signal:AbortSignal.timeout(20000)
+    });
+    console.log(JSON.stringify({event:"ai_selftest",ok:response.ok,status:response.status}));
+  }catch(error){
+    console.log(JSON.stringify({event:"ai_selftest",ok:false,error:String(error?.message||error).slice(0,120)}));
+  }
+}
+
 async function boot(){
   await migrate();
+  await selfTestAi();
   app.listen(port,"0.0.0.0",()=>{
     console.log("Vendedor NFC autônomo na porta "+port);
     setTimeout(()=>{
