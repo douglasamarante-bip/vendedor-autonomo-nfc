@@ -552,6 +552,8 @@ const pool=new Pool({
 });
 
 const queues=new Map();
+const replyTimers=new Map();
+const replyVersions=new Map();
 
 app.use(express.json({
   limit:"5mb",
@@ -737,16 +739,26 @@ function systemPrompt(){
     "Desconto/concessão máxima em reais: R$ "+maxDiscount+".",
     "Entrega: "+delivery+".",
     "Provas, fotos e vídeos disponíveis: "+proof+".",
-    "Responda em português do Brasil, curto, natural, educado e sem linguagem robótica.",
+    "Converse em português do Brasil como um bom vendedor de WhatsApp: natural, direto, cordial e atento ao que o cliente acabou de dizer.",
+    "Use o histórico da conversa. Não repita perguntas já respondidas e não recomece a conversa a cada mensagem.",
+    "Prefira frases curtas e vocabulário cotidiano. Evite texto com cara de atendimento automático, roteiro engessado ou redação publicitária.",
+    "Normalmente responda em uma mensagem curta. Quando realmente ajudar a leitura, use duas mensagens curtas separadas por uma linha em branco. Nunca use mais de duas.",
+    "Não faça textão. Não use títulos, listas, markdown ou várias perguntas na mesma resposta, salvo se o cliente pedir detalhes.",
+    "Não comece toda resposta com 'Olá', 'Perfeito', 'Entendi' ou outras muletas. Varie naturalmente e vá direto ao ponto.",
+    "Pode usar contrações e pontuação de conversa, mas mantenha português claro e profissional. Emoji só ocasionalmente, quando combinar com o tom do cliente.",
+    "Faça no máximo uma pergunta por vez para avançar a venda.",
+    "Se o cliente mandar várias mensagens seguidas, considere todas antes de responder.",
+    "Se o cliente estiver apenas confirmando algo curto, responda curto; não transforme uma confirmação em apresentação de vendas.",
     "Nunca invente preço, prazo, estoque, desconto, frete, instalação, garantia, depoimento ou resultado.",
     "Se preço ou entrega estiverem NÃO CONFIGURADOS, diga que precisa confirmar antes de informar.",
-    "Para frete, nunca invente valor. Peça o CEP do cliente e use apenas a cotação real do Melhor Envio quando ela estiver disponível.",
+    "Para frete, nunca invente valor. Peça o CEP do cliente e use apenas a cotação real disponível nas integrações de frete.",
     "Diferencie prazo de produção/postagem do prazo de transporte da transportadora.",
     "Não prometa aumento garantido de avaliações, vendas ou faturamento.",
-    "Faça no máximo uma pergunta por mensagem quando precisar avançar a conversa.",
-    "Não envie várias mensagens seguidas sem resposta do cliente.",
+    "Não envie várias mensagens seguidas sem motivo; no máximo duas partes para uma mesma resposta.",
+    "Se a pessoa perguntar diretamente se você é robô, IA ou atendimento automático, responda com transparência que é o assistente de vendas automatizado da empresa. Nunca afirme falsamente ser uma pessoa.",
+    "Não invente experiências pessoais, sentimentos, nome próprio, cargo ou histórias para parecer humano.",
     "Se a pessoa pedir para parar, sair, remover o contato ou não receber mensagens, confirme brevemente e encerre.",
-    "Se houver pedido fora das regras comerciais, diga que vai encaminhar para confirmação humana."
+    "Se houver pedido fora das regras comerciais, diga que precisa confirmar antes de prometer."
   ].join("\n");
 }
 
@@ -793,7 +805,8 @@ async function generateReply(chatId){
     },
     body:JSON.stringify({
       model:env("AI_MODEL"),
-      temperature:0.35,
+      temperature:Math.min(Math.max(Number(env("AGENT_TEMPERATURE")||0.5),0),1),
+      max_tokens:Math.min(Math.max(Number(env("AGENT_MAX_TOKENS")||220),80),400),
       messages
     }),
     signal:AbortSignal.timeout(30000)
@@ -808,13 +821,87 @@ async function generateReply(chatId){
   return text.slice(0,4000);
 }
 
+function sleep(ms){
+  return new Promise(resolve=>setTimeout(resolve,Math.max(0,ms||0)));
+}
+
+function randomBetween(min,max){
+  const a=Math.min(Number(min)||0,Number(max)||0);
+  const b=Math.max(Number(min)||0,Number(max)||0);
+  return Math.round(a+Math.random()*(b-a));
+}
+
+function outboundChatId(chatId){
+  const id=String(chatId||"");
+  return id.endsWith("@s.whatsapp.net")?id.replace(/@s\.whatsapp\.net$/,"@c.us"):id;
+}
+
+async function sendSeen(chatId){
+  try{
+    await waha("/api/sendSeen",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Accept":"application/json"},
+      body:JSON.stringify({session:sessionName(),chatId:outboundChatId(chatId)})
+    });
+  }catch{}
+}
+
+async function setChatPresence(chatId,presence){
+  try{
+    await waha("/api/"+encodeURIComponent(sessionName())+"/presence",{
+      method:"POST",
+      headers:{"Content-Type":"application/json","Accept":"application/json"},
+      body:JSON.stringify({chatId:outboundChatId(chatId),presence})
+    });
+  }catch{}
+}
+
+function splitHumanReply(value){
+  let text=String(value||"")
+    .replace(/^["']|["']$/g,"")
+    .replace(/\n{3,}/g,"\n\n")
+    .trim();
+  if(!text) return [];
+
+  let parts=text.split(/\n\s*\n/).map(x=>x.trim()).filter(Boolean);
+  if(parts.length>2){
+    parts=[parts[0],parts.slice(1).join(" ")];
+  }
+
+  const maxChars=Math.min(Math.max(Number(env("AGENT_MAX_CHARS_PER_MESSAGE")||520),240),800);
+  if(parts.length===1 && parts[0].length>maxChars){
+    const source=parts[0];
+    const target=Math.min(maxChars,Math.max(280,Math.round(source.length*0.55)));
+    let cut=-1;
+    for(let i=target;i>=Math.max(180,target-140);i--){
+      if(/[.!?]/.test(source[i]||"")){cut=i+1;break;}
+    }
+    if(cut<0){
+      for(let i=target;i>=Math.max(180,target-120);i--){
+        if(/\s/.test(source[i]||"")){cut=i;break;}
+      }
+    }
+    if(cut>0) parts=[source.slice(0,cut).trim(),source.slice(cut).trim()];
+  }
+
+  return parts.slice(0,2).map(x=>x.slice(0,maxChars).trim()).filter(Boolean);
+}
+
+function typingDelayFor(text){
+  const min=Math.min(Math.max(Number(env("AGENT_TYPING_MIN_MS")||1800),500),5000);
+  const max=Math.min(Math.max(Number(env("AGENT_TYPING_MAX_MS")||6500),min),12000);
+  const chars=String(text||"").length;
+  const calculated=900+chars*28+randomBetween(150,850);
+  return Math.min(Math.max(calculated,min),max);
+}
+
 async function sendText(chatId,text){
   const res=await waha("/api/sendText",{
     method:"POST",
     headers:{"Content-Type":"application/json","Accept":"application/json"},
     body:JSON.stringify({
       session:sessionName(),
-      chatId,
+      chatId:outboundChatId(chatId),
       text,
       linkPreview:false
     })
@@ -826,9 +913,91 @@ async function sendText(chatId,text){
   return data;
 }
 
+async function sendHumanizedReply(chatId,reply){
+  const parts=splitHumanReply(reply);
+  if(!parts.length) throw new Error("empty_humanized_reply");
+
+  const readMin=Math.min(Math.max(Number(env("AGENT_READ_MIN_MS")||900),0),5000);
+  const readMax=Math.min(Math.max(Number(env("AGENT_READ_MAX_MS")||2200),readMin),8000);
+  await sleep(randomBetween(readMin,readMax));
+
+  const sentMessages=[];
+  for(let i=0;i<parts.length;i++){
+    const part=parts[i];
+    await setChatPresence(chatId,"typing");
+    try{
+      await sleep(typingDelayFor(part));
+      const sent=await sendText(chatId,part);
+      sentMessages.push({sent,body:part,index:i,total:parts.length});
+    }finally{
+      await setChatPresence(chatId,"paused");
+    }
+
+    if(i<parts.length-1){
+      const betweenMin=Math.min(Math.max(Number(env("AGENT_BETWEEN_MESSAGES_MIN_MS")||650),250),2500);
+      const betweenMax=Math.min(Math.max(Number(env("AGENT_BETWEEN_MESSAGES_MAX_MS")||1400),betweenMin),4000);
+      await sleep(randomBetween(betweenMin,betweenMax));
+    }
+  }
+  return sentMessages;
+}
+
 function wantsOptOut(text){
   const v=String(text||"").toLowerCase();
   return /\b(parar|pare|sair|remover|remova|cancelar|não me chame|nao me chame|não mande|nao mande|stop)\b/i.test(v);
+}
+
+function scheduleAgentReply(chatId){
+  const version=(replyVersions.get(chatId)||0)+1;
+  replyVersions.set(chatId,version);
+
+  const previousTimer=replyTimers.get(chatId);
+  if(previousTimer) clearTimeout(previousTimer);
+
+  const settle=Math.min(Math.max(Number(env("AGENT_SETTLE_MS")||2600),700),7000);
+  const timer=setTimeout(()=>{
+    replyTimers.delete(chatId);
+
+    const previous=queues.get(chatId)||Promise.resolve();
+    const next=previous.then(async()=>{
+      if(replyVersions.get(chatId)!==version) return;
+
+      await sendSeen(chatId);
+      const reply=await generateReply(chatId);
+
+      // If another client message arrived while the AI was composing, discard
+      // this stale answer and let the newer turn be handled instead.
+      if(replyVersions.get(chatId)!==version) return;
+
+      const sentMessages=await sendHumanizedReply(chatId,reply);
+      for(const item of sentMessages){
+        await saveMessage({
+          providerId:String(item.sent?.id||crypto.randomUUID()),
+          chatId,
+          direction:"outbound",
+          body:item.body,
+          metadata:{
+            model:env("AI_MODEL"),
+            humanized:true,
+            part:item.index+1,
+            parts:item.total
+          }
+        });
+      }
+      if(sentMessages.length){
+        await pool.query("update sales_contacts set last_outbound_at=now(),last_seen_at=now() where chat_id=$1",[chatId]);
+      }
+    }).catch(err=>{
+      setChatPresence(chatId,"paused").catch(()=>{});
+      console.error("agent_reply_error",String(err?.message||err).slice(0,500));
+    }).finally(()=>{
+      if(queues.get(chatId)===next) queues.delete(chatId);
+    });
+
+    queues.set(chatId,next);
+  },settle);
+
+  replyTimers.set(chatId,timer);
 }
 
 async function processInbound(payload,eventId){
@@ -853,6 +1022,10 @@ async function processInbound(payload,eventId){
     await pool.query("update sales_contacts set opted_out=true,status='optout',last_seen_at=now() where chat_id=$1",[chatId]);
     if(autoReply()){
       const confirmation="Tudo certo. Não enviarei novas mensagens por aqui.";
+      await sendSeen(chatId);
+      await setChatPresence(chatId,"typing");
+      await sleep(randomBetween(700,1300));
+      await setChatPresence(chatId,"paused");
       const sent=await sendText(chatId,confirmation);
       await saveMessage({
         providerId:String(sent?.id||crypto.randomUUID()),
@@ -868,26 +1041,7 @@ async function processInbound(payload,eventId){
   const {rows:[contact]}=await pool.query("select opted_out,agent_enabled from sales_contacts where chat_id=$1",[chatId]);
   if(contact?.opted_out||!contact?.agent_enabled||!autoReply()||!aiReady()) return;
 
-  const previous=queues.get(chatId)||Promise.resolve();
-  const next=previous.then(async()=>{
-    const reply=await generateReply(chatId);
-    const delay=Math.min(Math.max(Number(env("AGENT_REPLY_DELAY_MS")||1200),0),8000);
-    if(delay) await new Promise(r=>setTimeout(r,delay));
-    const sent=await sendText(chatId,reply);
-    await saveMessage({
-      providerId:String(sent?.id||crypto.randomUUID()),
-      chatId,
-      direction:"outbound",
-      body:reply,
-      metadata:{model:env("AI_MODEL")}
-    });
-    await pool.query("update sales_contacts set last_outbound_at=now(),last_seen_at=now() where chat_id=$1",[chatId]);
-  }).catch(err=>{
-    console.error("agent_reply_error",String(err?.message||err).slice(0,500));
-  }).finally(()=>{
-    if(queues.get(chatId)===next) queues.delete(chatId);
-  });
-  queues.set(chatId,next);
+  scheduleAgentReply(chatId);
 }
 
 app.get("/health",async(_req,res)=>{
