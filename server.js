@@ -286,6 +286,25 @@ app.get("/{*splat}", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
+async function logDeskcommDiscovery(){
+  if(env("BOOTSTRAP_DISCOVERY").toLowerCase()!=="true") return;
+  const pool=getDeskcommPool();
+  if(!pool){console.log(JSON.stringify({event:"deskcomm_discovery",ok:false,error:"database_not_configured"}));return;}
+  try{
+    const client=await pool.connect();
+    try{
+      const channels=(await client.query("select id,organization_id,provider,status,archived_at,created_at from public.channel_sessions where archived_at is null order by created_at desc limit 20")).rows;
+      const agents=(await client.query("select id,organization_id,name,kind,operation_mode,paused_at,published_version_id,archived_at,created_at from public.ai_agents where archived_at is null order by created_at desc limit 20")).rows;
+      let credentials=[];
+      try{credentials=(await client.query("select id,organization_id,provider,label,validated_at,validation_error,is_active from public.ai_provider_credentials_safe where is_active=true order by created_at desc limit 20")).rows;}catch{}
+      console.log(JSON.stringify({event:"deskcomm_discovery",ok:true,channels,agents,credentials}));
+    }finally{client.release();}
+  }catch(error){
+    console.log(JSON.stringify({event:"deskcomm_discovery",ok:false,error:String(error?.message||error).slice(0,500)}));
+  }
+}
+
 app.listen(port, "0.0.0.0", () => {
   console.log(`Vendedor Autonomo NFC ouvindo na porta ${port}`);
+  logDeskcommDiscovery();
 });
