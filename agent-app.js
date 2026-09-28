@@ -4,6 +4,7 @@ const crypto=require("crypto");
 const {Pool}=require("pg");
 
 const app=express();
+const BUILD_VERSION="freight-v2";
 const port=process.env.PORT||3000;
 const env=(n)=>(process.env[n]||"").trim();
 const sessionName=()=>env("WAHA_SESSION_NAME")||"vendedor-nfc";
@@ -641,6 +642,7 @@ app.get("/api/status",async(_req,res)=>{
   const whatsapp=session?.status==="WORKING";
   res.json({
     ok:true,
+    build:BUILD_VERSION,
     isolated:true,
     agent:whatsapp&&database&&aiReady()&&autoReply()?"active":"setup",
     integrations:{
