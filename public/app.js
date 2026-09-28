@@ -89,3 +89,62 @@ $('#exportBtn').onclick=()=>{
 };
 
 initSelects(); renderAll();
+
+async function renderAgentStatus(){
+  const badge=$('#agentBadge');
+  const state=$('#agentState');
+  const missing=$('#missingList');
+  const webhook=$('#whatsappWebhookUrl');
+  if(webhook) webhook.textContent=location.origin+'/webhooks/whatsapp';
+
+  try{
+    const response=await fetch('/api/status',{cache:'no-store'});
+    if(!response.ok) throw new Error('status '+response.status);
+    const data=await response.json();
+    const i=data.integrations||{};
+    const setStatus=(id,ok)=>{
+      const el=$(id);
+      if(!el)return;
+      el.textContent=ok?'CONECTADO':'PENDENTE';
+      el.classList.toggle('ok',Boolean(ok));
+      el.classList.toggle('off',!ok);
+    };
+    setStatus('#statusWhatsapp',i.whatsapp);
+    setStatus('#statusAi',i.ai);
+    setStatus('#statusLeads',i.leads);
+    setStatus('#statusWoovi',i.woovi);
+    setStatus('#statusDb',i.database);
+
+    const ready=data.agent==='ready';
+    if(badge){
+      badge.textContent=ready?'ATIVO':'SETUP';
+    }
+    if(state){
+      state.textContent=ready?'AGENTE PRONTO':'CONFIGURAÇÃO PENDENTE';
+      state.classList.toggle('ready',ready);
+    }
+
+    if(missing){
+      if(!data.missing?.length){
+        missing.innerHTML='<div class="missing-item done">Integrações essenciais conectadas.</div>';
+      }else{
+        missing.innerHTML=data.missing.map(x=>'<div class="missing-item">'+esc(x)+'</div>').join('');
+      }
+    }
+  }catch(err){
+    if(state) state.textContent='SERVIDOR INDISPONÍVEL';
+    if(missing) missing.innerHTML='<div class="missing-item">Não foi possível consultar o backend.</div>';
+  }
+}
+
+const copyWebhookBtn=$('#copyWebhookBtn');
+if(copyWebhookBtn){
+  copyWebhookBtn.onclick=async()=>{
+    const value=$('#whatsappWebhookUrl')?.textContent||'';
+    await navigator.clipboard.writeText(value);
+    showToast('Webhook copiado');
+  };
+}
+
+renderAgentStatus();
+setInterval(renderAgentStatus,15000);
