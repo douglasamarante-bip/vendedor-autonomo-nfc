@@ -363,8 +363,28 @@ async function logDeskcommDiscovery(){
   }
 }
 
+async function cleanupDeskcommAccidentalLink(){
+  if(env("CLEANUP_DESKCOMM_NFC").toLowerCase()!=="true") return;
+  const pool=getDeskcommPool();
+  if(!pool){console.log(JSON.stringify({event:"deskcomm_cleanup",ok:false,error:"database_not_configured"}));return;}
+  const client=await pool.connect();
+  try{
+    await client.query("begin");
+    const targetAgentId="de38b58f-be73-4008-a2c0-1cee6ea3a80b";
+    const targetVersionId="c67c0fcc-b255-41d6-b069-b793ea257b11";
+    await client.query("delete from public.ai_agent_versions where id=$1 and agent_id=$2",[targetVersionId,targetAgentId]);
+    const deleted=await client.query("delete from public.ai_agents where id=$1 and lower(name)=lower('Vendedor NFC') returning id",[targetAgentId]);
+    await client.query("commit");
+    console.log(JSON.stringify({event:"deskcomm_cleanup",ok:true,deleted_agent:deleted.rowCount===1}));
+  }catch(error){
+    try{await client.query("rollback");}catch{}
+    console.log(JSON.stringify({event:"deskcomm_cleanup",ok:false,error:String(error?.message||error).slice(0,500)}));
+  }finally{client.release();}
+}
+
 app.listen(port, "0.0.0.0", () => {
   console.log(`Vendedor Autonomo NFC ouvindo na porta ${port}`);
   logDeskcommDiscovery();
   bootstrapNfcSalesAgent();
+  cleanupDeskcommAccidentalLink();
 });
