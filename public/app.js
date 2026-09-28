@@ -90,22 +90,65 @@ $('#exportBtn').onclick=()=>{
 
 initSelects(); renderAll();
 
+async function loadWahaQr(){
+  const img=$('#wahaQrImage');
+  const text=$('#wahaStatusText');
+  try{
+    const r=await fetch('/api/waha/qr',{cache:'no-store'});
+    const data=await r.json();
+    if(data.working){
+      img?.classList.add('hidden');
+      if(text) text.textContent='WhatsApp conectado e pronto.';
+      return;
+    }
+    if(!r.ok||!data.data) throw new Error(data.error||'qr_indisponivel');
+    if(img){
+      img.src='data:'+(data.mimetype||'image/png')+';base64,'+data.data;
+      img.classList.remove('hidden');
+    }
+    if(text) text.textContent='Abra o WhatsApp no celular e escaneie este QR Code.';
+  }catch{
+    img?.classList.add('hidden');
+    if(text) text.textContent='QR ainda não disponível. Clique em Conectar WhatsApp.';
+  }
+}
+
+async function connectWaha(){
+  const btn=$('#connectWahaBtn');
+  const text=$('#wahaStatusText');
+  if(btn){btn.disabled=true;btn.textContent='Preparando...';}
+  if(text) text.textContent='Criando e iniciando a sessão vendedor-nfc...';
+  try{
+    const r=await fetch('/api/waha/connect',{method:'POST'});
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'falha');
+    if(text) text.textContent='Sessão: '+(data.session?.status||'iniciada');
+    await new Promise(r=>setTimeout(r,1200));
+    await loadWahaQr();
+    await renderAgentStatus();
+  }catch(err){
+    if(text) text.textContent='Não consegui iniciar o WAHA: '+String(err.message||err);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Conectar WhatsApp';}
+  }
+}
+
 async function renderAgentStatus(){
   const badge=$('#agentBadge');
   const state=$('#agentState');
   const missing=$('#missingList');
-  const webhook=$('#whatsappWebhookUrl');
-  if(webhook) webhook.textContent=location.origin+'/webhooks/whatsapp';
+  const detail=$('#whatsappDetail');
+  const wahaText=$('#wahaStatusText');
 
   try{
     const response=await fetch('/api/status',{cache:'no-store'});
     if(!response.ok) throw new Error('status '+response.status);
     const data=await response.json();
     const i=data.integrations||{};
-    const setStatus=(id,ok)=>{
+    const setStatus=(id,ok,labelOk='CONECTADO',labelOff='PENDENTE')=>{
       const el=$(id);
       if(!el)return;
-      el.textContent=ok?'CONECTADO':'PENDENTE';
+      el.textContent=ok?labelOk:labelOff;
       el.classList.toggle('ok',Boolean(ok));
       el.classList.toggle('off',!ok);
     };
@@ -115,36 +158,46 @@ async function renderAgentStatus(){
     setStatus('#statusWoovi',i.woovi);
     setStatus('#statusDb',i.database);
 
-    const ready=data.agent==='ready';
-    if(badge){
-      badge.textContent=ready?'ATIVO':'SETUP';
-    }
+    const session=data.whatsappSession;
+    if(detail) detail.textContent=session?'Sessão '+session.name+' • '+session.status:(i.waha?'WAHA online • número não conectado':'WAHA iniciando...');
+    if(wahaText && session?.status==='WORKING') wahaText.textContent='WhatsApp conectado e pronto.';
+
+    const essentialsReady=i.whatsapp&&i.database&&i.ai;
+    if(badge) badge.textContent=i.whatsapp?'WAHA':'SETUP';
     if(state){
-      state.textContent=ready?'AGENTE PRONTO':'CONFIGURAÇÃO PENDENTE';
-      state.classList.toggle('ready',ready);
+      state.textContent=essentialsReady?'AGENTE PRONTO':(i.whatsapp?'WHATSAPP CONECTADO':'CONFIGURAÇÃO PENDENTE');
+      state.classList.toggle('ready',essentialsReady);
     }
 
+    const faltam=[];
+    if(!i.waha) faltam.push('WAHA');
+    if(!i.whatsapp) faltam.push('Conectar o número pelo QR Code');
+    if(!i.ai) faltam.push('IA');
+    if(!i.leads) faltam.push('Busca de leads');
+    if(!i.woovi) faltam.push('Woovi');
+    if(!i.database) faltam.push('Banco de dados');
+    if(!i.autoReply) faltam.push('Ativar respostas automáticas');
     if(missing){
-      if(!data.missing?.length){
-        missing.innerHTML='<div class="missing-item done">Integrações essenciais conectadas.</div>';
-      }else{
-        missing.innerHTML=data.missing.map(x=>'<div class="missing-item">'+esc(x)+'</div>').join('');
-      }
+      missing.innerHTML=faltam.length
+        ? faltam.map(x=>'<div class="missing-item">'+esc(x)+'</div>').join('')
+        : '<div class="missing-item done">Integrações essenciais conectadas.</div>';
     }
-  }catch(err){
+
+    if(session?.status==='SCAN_QR_CODE'){
+      await loadWahaQr();
+    }else if(session?.status==='WORKING'){
+      $('#wahaQrImage')?.classList.add('hidden');
+    }
+  }catch{
     if(state) state.textContent='SERVIDOR INDISPONÍVEL';
     if(missing) missing.innerHTML='<div class="missing-item">Não foi possível consultar o backend.</div>';
   }
 }
 
-const copyWebhookBtn=$('#copyWebhookBtn');
-if(copyWebhookBtn){
-  copyWebhookBtn.onclick=async()=>{
-    const value=$('#whatsappWebhookUrl')?.textContent||'';
-    await navigator.clipboard.writeText(value);
-    showToast('Webhook copiado');
-  };
-}
+const connectWahaBtn=$('#connectWahaBtn');
+if(connectWahaBtn) connectWahaBtn.onclick=connectWaha;
+const refreshQrBtn=$('#refreshQrBtn');
+if(refreshQrBtn) refreshQrBtn.onclick=loadWahaQr;
 
 renderAgentStatus();
 setInterval(renderAgentStatus,15000);
