@@ -286,6 +286,62 @@ app.get("/{*splat}", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
+async function bootstrapNfcSalesAgent(){
+  if(env("BOOTSTRAP_NFC_AGENT").toLowerCase()!=="true") return;
+  const pool=getDeskcommPool();
+  if(!pool){console.log(JSON.stringify({event:"nfc_agent_bootstrap",ok:false,error:"database_not_configured"}));return;}
+  const prompt=[
+    "Você é o Vendedor NFC, especialista em placas NFC para facilitar avaliações no Google.",
+    "Atenda somente conversas recebidas ou contatos que tenham autorização válida para atendimento por WhatsApp.",
+    "Fale em português do Brasil, de forma curta, natural e profissional.",
+    "Seu fluxo é: entender o negócio, identificar a necessidade, demonstrar como a placa funciona, responder objeções, apresentar preço configurado, conduzir ao fechamento e acompanhar o pagamento.",
+    "Nunca invente preço, prazo, estoque, desconto, frete, garantia, depoimento ou resultado.",
+    "Nunca prometa aumento garantido de avaliações ou faturamento.",
+    "Se preço, prazo ou condição não estiverem configurados, diga que precisa confirmar em vez de inventar.",
+    "Se o cliente pedir para não receber mais mensagens, encerre o contato.",
+    "Quando houver pedido fora do escopo, risco ou necessidade de exceção comercial, encaminhe para humano."
+  ].join("\n");
+  const client=await pool.connect();
+  try{
+    await client.query("begin");
+    const channel=(await client.query("select id,organization_id from public.channel_sessions where archived_at is null and status='WORKING' and provider='meta_cloud' order by created_at desc limit 1")).rows[0];
+    if(!channel) throw new Error("working_meta_channel_not_found");
+    const sourceVersion=(await client.query("select * from public.ai_agent_versions where organization_id=$1 and channel_session_id=$2 and provider='groq' and credential_id is not null order by created_at desc limit 1",[channel.organization_id,channel.id])).rows[0];
+    if(!sourceVersion) throw new Error("validated_groq_version_not_found");
+    let agent=(await client.query("select id from public.ai_agents where organization_id=$1 and lower(name)=lower($2) and archived_at is null limit 1",[channel.organization_id,"Vendedor NFC"])).rows[0];
+    if(!agent){
+      agent=(await client.query(
+        `insert into public.ai_agents
+          (organization_id,name,description,kind,channel,priority,is_active,is_default,model,system_prompt,config,guardrails,operation_mode,paused_at)
+         select organization_id,$2,$3,kind,channel,100,false,false,$4,$5,config,guardrails,'automatic',now()
+         from public.ai_agents
+         where organization_id=$1 and archived_at is null
+         order by created_at asc limit 1
+         returning id`,
+        [channel.organization_id,"Vendedor NFC","Agente comercial dedicado à venda de placas NFC.","openai/gpt-oss-20b",prompt]
+      )).rows[0];
+    }
+    if(!agent) throw new Error("agent_create_failed");
+    let version=(await client.query("select id from public.ai_agent_versions where organization_id=$1 and agent_id=$2 and version_number=1 limit 1",[channel.organization_id,agent.id])).rows[0];
+    if(!version){
+      version=(await client.query(
+        `insert into public.ai_agent_versions
+          (organization_id,agent_id,version_number,system_prompt,provider,model,credential_id,tool_ids,trigger_config,channel_session_id,max_steps,token_budget,cost_budget_cents,history_message_window,history_token_window,handoff_keywords,handoff_tool_enabled,status,created_by)
+         values
+          ($1,$2,1,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true,'draft',$16)
+         returning id`,
+        [channel.organization_id,agent.id,prompt,sourceVersion.provider,sourceVersion.model,sourceVersion.credential_id,sourceVersion.tool_ids,sourceVersion.trigger_config,channel.id,sourceVersion.max_steps,sourceVersion.token_budget,sourceVersion.cost_budget_cents,sourceVersion.history_message_window,sourceVersion.history_token_window,sourceVersion.handoff_keywords,sourceVersion.created_by]
+      )).rows[0];
+    }
+    await client.query("update public.ai_agents set published_version_id=null, paused_at=coalesce(paused_at,now()), operation_mode='automatic', updated_at=now() where organization_id=$1 and id=$2",[channel.organization_id,agent.id]);
+    await client.query("commit");
+    console.log(JSON.stringify({event:"nfc_agent_bootstrap",ok:true,agent_id:agent.id,version_id:version.id,state:"draft_paused",channel_id:channel.id,provider:sourceVersion.provider}));
+  }catch(error){
+    try{await client.query("rollback");}catch{}
+    console.log(JSON.stringify({event:"nfc_agent_bootstrap",ok:false,error:String(error?.message||error).slice(0,500)}));
+  }finally{client.release();}
+}
+
 async function logDeskcommDiscovery(){
   if(env("BOOTSTRAP_DISCOVERY").toLowerCase()!=="true") return;
   const pool=getDeskcommPool();
@@ -309,4 +365,5 @@ async function logDeskcommDiscovery(){
 app.listen(port, "0.0.0.0", () => {
   console.log(`Vendedor Autonomo NFC ouvindo na porta ${port}`);
   logDeskcommDiscovery();
+  bootstrapNfcSalesAgent();
 });
