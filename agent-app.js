@@ -233,6 +233,14 @@ async function quoteShipping(toPostalCode){
   if(!response.ok) throw new Error("melhor_envio_"+response.status+":"+(data?.message||raw).slice(0,220));
 
   const list=Array.isArray(data)?data:[];
+  const failures=list
+    .filter(x=>x && x.error)
+    .map(x=>({
+      id:x.id||null,
+      name:x.name||"",
+      company:x.company?.name||"",
+      error:String(x.error||"").slice(0,180)
+    }));
   let valid=list
     .filter(x=>x && !x.error && (x.custom_price||x.price))
     .map(x=>({
@@ -254,7 +262,7 @@ async function quoteShipping(toPostalCode){
   valid.sort((a,b)=>a.price-b.price || a.deliveryTime-b.deliveryTime);
   const cheapest=valid[0]||null;
   const fastest=[...valid].sort((a,b)=>(a.deliveryTime||9999)-(b.deliveryTime||9999)||a.price-b.price)[0]||null;
-  return {toPostalCode,options:valid.slice(0,10),cheapest,fastest};
+  return {toPostalCode,options:valid.slice(0,10),cheapest,fastest,failures:failures.slice(0,10)};
 }
 
 
@@ -469,7 +477,7 @@ async function generateReply(chatId){
   let shippingContext="";
   const lastInbound=[...history].reverse().find(m=>m.direction==="inbound");
   const cep=extractPostalCode(lastInbound?.body||"");
-  if(cep && shippingReady()){
+  if(cep && shippingConfigured()){
     try{
       const quote=await quoteShipping(cep);
       const cheapest=quote.cheapest;
@@ -849,7 +857,8 @@ async function selfTestShipping(){
         service:quote.cheapest.name,
         price:quote.cheapest.price,
         deliveryTime:quote.cheapest.deliveryTime
-      }:null
+      }:null,
+      failures:quote.failures
     }));
   }catch(error){
     console.log(JSON.stringify({
